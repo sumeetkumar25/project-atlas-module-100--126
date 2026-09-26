@@ -26,10 +26,16 @@ from .exporter import FeatureRobustnessExporter
 
 class FeatureRobustnessResearch(BaseResearchModule):
     """Main research module for feature robustness analysis."""
-    
+
     MODULE_OUTPUT = "module123"
-    METADATA = FeatureRobustnessStatisticsEngine.METADATA
-    
+
+    METADATA = {
+        **FeatureRobustnessStatisticsEngine.METADATA,
+        "depends_on": ["100"],
+    }
+
+    REQUIRED_TARGETS = ["future_breakout"]
+
     def __init__(
         self,
         registry: Optional[AtlasRegistry] = None,
