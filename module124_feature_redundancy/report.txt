@@ -132,7 +132,18 @@ class FeatureRedundancyReport:
         lines.append("\n" + "=" * 60)
         lines.append("FEATURE CLUSTERS")
         lines.append("=" * 60)
-        
+
+        # Handle legitimate empty result
+        if cluster_table.empty:
+            lines.append("\nNo feature clusters were produced.")
+            return "\n".join(lines)
+
+        # Detect malformed non-empty result
+        if "cluster_id" not in cluster_table.columns:
+            raise ValueError(
+                "Cluster table is non-empty but missing required column 'cluster_id'"
+            )
+
         for cluster in sorted(cluster_table['cluster_id'].unique()):
             features = cluster_table[cluster_table['cluster_id'] == cluster]['feature'].tolist()
             lines.append(f"\nCluster {cluster}: {len(features)} features")
