@@ -24,10 +24,14 @@ from .exporter import FeatureRedundancyExporter
 
 class FeatureRedundancyResearch(BaseResearchModule):
     """Main research module for feature redundancy analysis."""
-    
+
     MODULE_OUTPUT = "module124"
-    METADATA = FeatureRedundancyStatisticsEngine.METADATA
-    
+
+    METADATA = {
+        **FeatureRedundancyStatisticsEngine.METADATA,
+        "depends_on": ["100", "102", "035", "037"],
+    }
+
     def __init__(
         self,
         registry: Optional[AtlasRegistry] = None,
@@ -75,8 +79,19 @@ class FeatureRedundancyResearch(BaseResearchModule):
         ]
     
     def _prepare_data(self) -> Dict[str, Any]:
-        """Prepare data from DataFrame."""
-        return {"df": self.df}
+        """Prepare market data together with injected dependency features."""
+        if self.feature_df is not None and not self.feature_df.empty:
+            df = pd.concat(
+                [
+                    self.market_df.reset_index(drop=True),
+                    self.feature_df.reset_index(drop=True),
+                ],
+                axis=1,
+            )
+        else:
+            df = self.market_df.copy()
+
+        return {"df": df}
     
     def _compute_redundancy(self) -> Dict[str, Any]:
         """Step 1: Compute feature redundancy."""
