@@ -36,7 +36,8 @@ class FeatureStabilityStatisticsEngine:
         "module": 125,
         "name": "Feature Stability Analysis",
         "version": "1.0.0",
-        "description": "Determines whether feature statistical properties remain consistent over time"
+        "description": "Determines whether feature statistical properties remain consistent over time",
+        "depends_on": ["100", "102", "035", "037"],
     }
     
     def analyze(self, result: FeatureStabilityResult) -> FeatureStabilityStatistics:
