@@ -24,10 +24,19 @@ from .exporter import FeatureRepositoryExporter
 
 class FeatureRepositoryResearch(BaseResearchModule):
     """Main research module for feature repository."""
-    
+
     MODULE_OUTPUT = "module126"
-    METADATA = FeatureRepositoryStatisticsEngine.METADATA
-    
+
+    METADATA = {
+        **FeatureRepositoryStatisticsEngine.METADATA,
+        "depends_on": [
+            "100",
+            "102",
+            "035",
+            "037",
+        ],
+    }
+
     def __init__(
         self,
         registry: Optional[AtlasRegistry] = None,
