@@ -313,6 +313,14 @@ def test_pipeline():
     print("=" * 60)
     
     df = create_test_data(n=300)
+
+    # Supply deterministic market timestamps for the integration test.
+    df["timestamp"] = pd.date_range(
+        start="2024-01-01",
+        periods=len(df),
+        freq="15min",
+        tz="UTC",
+    )
     
     research = BreakoutProbabilityResearch(
         horizons=[1, 3, 5],
