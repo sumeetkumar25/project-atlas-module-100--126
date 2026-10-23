@@ -120,6 +120,9 @@ class BreakoutProbabilityEngine:
     ) -> pd.Series:
         """
         Calculate ATR using EMA smoothing.
+
+        Uses alpha = 1 / atr_period, matching the classic
+        Wilder smoothing constant for the Average True Range.
         """
 
         if not (
@@ -143,7 +146,7 @@ class BreakoutProbabilityEngine:
         ).max(axis=1)
 
         atr = tr.ewm(
-            span=self.atr_period,
+            alpha=1 / self.atr_period,
             min_periods=self.atr_period,
             adjust=False,
         ).mean()
