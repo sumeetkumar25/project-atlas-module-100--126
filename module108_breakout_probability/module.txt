@@ -397,12 +397,36 @@ class BreakoutProbabilityResearch(
             )
 
         # --------------------------------------------------------------
-        # Extract OHLC
+        # Extract OHLC bound to the real market timestamps.
+        #
+        # The framework injects a `timestamp` column, but the
+        # DataFrame may carry a default integer index. If we let
+        # the OHLC series keep that integer index, then compute()
+        # would write that integer index into the features artifact
+        # as its `timestamp` column. Rebinding the OHLC series onto
+        # a DatetimeIndex built from the timestamp column ensures
+        # downstream artifacts are correctly aligned to market bars.
         # --------------------------------------------------------------
 
-        high = execution_df["high"]
-        low = execution_df["low"]
-        close = execution_df["close"]
+        if "timestamp" not in execution_df.columns:
+            raise ValueError(
+                "Module 108 requires the original timestamp column "
+                "to preserve artifact alignment."
+            )
+
+        market_index = pd.Index(
+            execution_df["timestamp"],
+            name="timestamp",
+        )
+
+        if market_index.isna().any() or market_index.has_duplicates:
+            raise ValueError(
+                "Module 108 received invalid or duplicate timestamps."
+            )
+
+        high = execution_df["high"].set_axis(market_index)
+        low = execution_df["low"].set_axis(market_index)
+        close = execution_df["close"].set_axis(market_index)
 
         # --------------------------------------------------------------
         # Extract Module 103 state
