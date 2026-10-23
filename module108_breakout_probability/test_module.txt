@@ -48,6 +48,17 @@ def create_test_data(n=1000, seed=42):
         "state": states
     })
     
+    df.insert(
+        0,
+        "timestamp",
+        pd.date_range(
+            start="2024-01-01",
+            periods=n,
+            freq="15min",
+            tz="UTC",
+        ),
+    )
+    
     return df
 
 
