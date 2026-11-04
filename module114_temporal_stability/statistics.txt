@@ -31,7 +31,11 @@ class TemporalStabilityStatisticsEngine:
         "name": "Temporal Stability",
         "version": "1.0.0",
         "description": "Measures whether feature predictive power remains stable over time",
-        "depends_on": ["103"],
+        # Feature sources (100, 102, 035, 037) supply the four canonical
+        # engineered features this module scores across time. Module 108
+        # is added by this patch and its features are injected through the
+        # standard dependency-injection path.
+        "depends_on": ["100", "102", "035", "037", "108"],
         "required_targets": ["future_breakout"]
     }
     
