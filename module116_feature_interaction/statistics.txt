@@ -31,7 +31,14 @@ class FeatureInteractionStatisticsEngine:
         "name": "Feature Interaction",
         "version": "1.0.0",
         "description": "Measures synergy between feature pairs",
-        "required_targets": ["future_breakout"]
+
+        # Module 115 supplies the feature-redundancy selection that defines
+        # which features enter the pairwise interaction analysis. Module 108
+        # supplies the upstream target producer's artifacts; it must run and
+        # pass before Module 116 executes so that future_breakout and the
+        # feature matrix are both materialized.
+        "required_targets": ["future_breakout"],
+        "depends_on": ["115", "108"],
     }
     
     def analyze(self, result: FeatureInteractionResult) -> FeatureInteractionStatistics:
