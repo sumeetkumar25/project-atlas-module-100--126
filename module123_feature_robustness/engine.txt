@@ -456,15 +456,48 @@ class FeatureRobustnessEngine:
     def compute(self, df: pd.DataFrame) -> FeatureRobustnessResult:
         """
         Main computation method.
+
+        Target extraction is delegated to get_target_series() at the
+        engine boundary so this module shares the canonical contract for
+        future_breakout. The per-regime binary filter inside
+        compute_regime_scores() remains the authoritative gate for which
+        observations participate in scoring.
         """
+        from atlas.core.data_contracts import (
+            normalize_research_frame,
+            get_target_series,
+        )
+
         print("\n  Computing Feature Robustness...")
-        
+
+        # Normalize at the engine boundary.
+        #
+        # This ensures the engine produces correct results regardless of
+        # whether it was called through BaseResearchModule.run_dataframe()
+        # (which already normalizes) or directly (tests, notebooks).
+        df = normalize_research_frame(
+            df,
+            dataset_name="Module 123",
+        )
+
         # Get target
         if self.target_column not in df.columns:
             raise ValueError(f"Target column '{self.target_column}' not found")
-        
-        y = df[self.target_column].values
-        
+
+        # Canonical target extraction via shared contract helper.
+        #
+        # The downstream per-regime mask inside compute_regime_scores()
+        # will re-filter to {0, 1}, so the presence of NaN here is fine —
+        # the canonical helper preserves them exactly as the target
+        # generator intended.
+        target = get_target_series(
+            df,
+            self.target_column,
+            dataset_name="Module 123",
+        )
+
+        y = target.to_numpy()
+
         # Get features
         features = self.get_feature_columns(df)
         print(f"  Found {len(features)} features")
