@@ -67,12 +67,37 @@ class CrossTimeframeConsistencyEngine:
         self.price_column = price_column
 
     def load_datasets(self) -> Dict[str, pd.DataFrame]:
-        """Load datasets from configured paths."""
+        """Load datasets from configured paths.
+
+        Each CSV is passed through normalize_research_frame() with
+        require_unique_timestamps=True so that:
+          - column names / dtypes are canonicalized
+          - exact duplicate timestamp rows are dropped
+          - duplicate timestamps with conflicting OHLCV raise rather
+            than silently keeping the first occurrence
+
+        This is a data-integrity guard. If a source CSV contains
+        duplicate timestamps with different market values, the engine
+        will fail loudly with the offending timestamps named — instead
+        of the consistency analysis silently comparing against a
+        corrupted reference.
+        """
+        from atlas.core.data_contracts import normalize_research_frame
+
         datasets = {}
         for name, path in self.dataset_paths.items():
             if Path(path).exists():
                 df = pd.read_csv(path)
+                df = normalize_research_frame(
+                    df,
+                    dataset_name=f"Module 112 CSV / {name}",
+                    require_unique_timestamps=True,
+                )
                 datasets[name] = df
+                print(
+                    f"[MODULE 112 CSV] {name}: "
+                    f"{len(df)} rows from {path}"
+                )
             else:
                 print(f"  Warning: Dataset {name} not found at {path}")
                 datasets[name] = pd.DataFrame()
