@@ -232,6 +232,28 @@ class BreakoutProbabilityResearch(
             np.asarray(states),
         )
 
+        # Canonical binary target for downstream predictive analysis.
+        # +1 / -1 = breakout occurred; 0 = no breakout.
+        # -99 = invalid or incomplete future observation.
+        if "breakout_10" not in features.columns:
+            raise ValueError(
+                "Module 108 is missing required target breakout_10"
+            )
+
+        features["future_breakout"] = (
+            pd.to_numeric(
+                features["breakout_10"],
+                errors="coerce",
+            )
+            .map({
+                1: 1.0,
+                -1: 1.0,
+                0: 0.0,
+                -99: np.nan,
+            })
+            .astype("float64")
+        )
+
         # --------------------------------------------------------------
         # 6. CANONICAL STATISTICS ARTIFACT
         # --------------------------------------------------------------
