@@ -31,7 +31,14 @@ class FeatureRobustnessResearch(BaseResearchModule):
 
     METADATA = {
         **FeatureRobustnessStatisticsEngine.METADATA,
-        "depends_on": ["100"],
+        # Module 100 supplies the engineered feature columns evaluated
+        # here. Module 108 supplies the future_breakout target that
+        # REQUIRED_TARGETS and __init__'s target_column both reference.
+        # Without the 108 edge, topological sort could schedule Module 123
+        # ahead of 108, and the runner's ensure_targets() call would
+        # regenerate future_breakout from an unstable source instead of
+        # using Module 108's canonical label.
+        "depends_on": ["100", "108"],
     }
 
     REQUIRED_TARGETS = ["future_breakout"]
