@@ -124,20 +124,6 @@ class TemporalStabilityEngine:
         Returns:
             Score (0-1 for normalized metrics)
         """
-        # ------------------------------------------------------------
-        # Numeric coercion and validation.
-        #
-        # Both the feature and the target are coerced to numeric,
-        # then filtered to a common valid mask:
-        #   - finite feature values
-        #   - finite target values
-        #   - binary target in {0.0, 1.0}
-        #
-        # This eliminates NaN, +/-inf, and any non-binary label such
-        # as -99 (invalid/incomplete future observation) before any
-        # score computation. Without this, roc_auc_score() can raise
-        # or silently mis-score on a mixed-label target.
-        # ------------------------------------------------------------
         X = pd.to_numeric(
             df[feature],
             errors="coerce"
@@ -171,9 +157,6 @@ class TemporalStabilityEngine:
         if np.std(X) < 1e-12:
             return 0.0
 
-        # ------------------------------------------------------------
-        # Existing scoring branches (unchanged).
-        # ------------------------------------------------------------
         try:
             if self.scoring_metric == "auc":
                 score = roc_auc_score(y, X)
@@ -182,12 +165,11 @@ class TemporalStabilityEngine:
                 if np.isnan(score):
                     score = 0.0
             elif self.scoring_metric == "mutual_information":
-                # Discretize for MI
                 n_bins = min(10, len(np.unique(X)))
                 X_disc = pd.qcut(X, q=n_bins, labels=False, duplicates='drop')
                 if len(np.unique(X_disc)) > 1:
                     score = mutual_info_score(X_disc, y)
-                    score = min(1.0, score / 0.5)  # Normalize
+                    score = min(1.0, score / 0.5)
                 else:
                     score = 0.0
             else:
@@ -213,9 +195,6 @@ class TemporalStabilityEngine:
         for window_idx, df in enumerate(windows):
             y_raw = df[self.target_column].values
             
-            # Fast-path: if the raw window has fewer rows than min_samples,
-            # no feature can pass the per-feature cleaned min_samples check
-            # (cleaning only removes rows). Skip the window entirely.
             if len(df) < self.min_samples:
                 continue
             
@@ -225,21 +204,6 @@ class TemporalStabilityEngine:
                 
                 score = self.compute_window_score(df, feature, y_raw)
                 
-                # --------------------------------------------------
-                # Compute cleaned sample statistics for THIS
-                # (window, feature) pair.
-                #
-                # This mirrors the cleaning logic in
-                # compute_window_score(): without it, `samples` would
-                # report the raw window length and `positive_ratio`
-                # would average the raw target (including NaN / -99),
-                # neither of which matches the data that actually fed
-                # roc_auc_score().
-                #
-                # The duplication is deliberate: compute_window_score()
-                # retains its single-value return contract, and this
-                # inline block supplies the honest statistics.
-                # --------------------------------------------------
                 X_check = pd.to_numeric(
                     df[feature],
                     errors="coerce"
@@ -281,9 +245,6 @@ class TemporalStabilityEngine:
     ) -> pd.DataFrame:
         """
         Compute per-feature temporal statistics.
-        
-        Returns:
-            DataFrame with temporal statistics
         """
         stats_rows = []
         
@@ -298,18 +259,14 @@ class TemporalStabilityEngine:
             std_score = np.std(scores)
             cv_score = std_score / (mean_score + 1e-12)
             
-            # Trend drift
             x = np.arange(len(scores))
             slope, intercept = np.polyfit(x, scores, 1)
             
-            # Decay (last - first)
             decay = scores[-1] - scores[0]
             
-            # Stability
             stability = 1 - (std_score / (mean_score + 1e-12))
             stability = np.clip(stability, 0, 1)
             
-            # Temporal score
             temporal_score = (
                 0.40 * stability +
                 0.30 * (1 - min(1, abs(decay))) +
@@ -337,9 +294,6 @@ class TemporalStabilityEngine:
     def compute_window_summary(self, window_scores: pd.DataFrame) -> pd.DataFrame:
         """
         Compute summary per window.
-        
-        Returns:
-            DataFrame with window summaries
         """
         summaries = []
         
@@ -364,14 +318,10 @@ class TemporalStabilityEngine:
     ) -> float:
         """
         Compute overall temporal stability index.
-        
-        Returns:
-            Temporal index (0-100)
         """
         if temporal_stats.empty:
             return 0.0
         
-        # Average of temporal scores
         return float(temporal_stats['temporal_score'].mean())
 
     def compute(
@@ -381,27 +331,58 @@ class TemporalStabilityEngine:
         """
         Main computation method.
         """
+        from atlas.core.data_contracts import (
+            normalize_research_frame,
+            get_target_series,
+        )
+
+        # Normalize the input at the engine boundary. This is the same
+        # contract that BaseResearchModule.load_dataframe() enforces on
+        # the way in, applied again here so the engine is safe when
+        # called directly (tests, notebooks, alternative callers).
+        df = normalize_research_frame(
+            df,
+            dataset_name="Module 114",
+        )
+
+        # Extract the target through the canonical helper. The per-window
+        # scoring inside compute_window_scores() re-extracts from each
+        # window DataFrame, but this boundary call guarantees the column
+        # is present and coercible before any window splitting happens.
+        target = get_target_series(
+            df,
+            self.target_column,
+            dataset_name="Module 114",
+        )
+
         # Validate input
         required_cols = [self.price_column, self.target_column]
         missing = set(required_cols) - set(df.columns)
         if missing:
             raise ValueError(f"Missing required columns: {missing}")
+
+        # Boundary validation: at least some target rows must be defined.
+        # A fully-NaN future_breakout would silently produce score 0.0 for
+        # every feature in every window, which is indistinguishable from a
+        # genuinely non-predictive feature. Fail loudly instead.
+        if target.notna().sum() == 0:
+            raise ValueError(
+                f"Module 114: target column '{self.target_column}' "
+                f"contains no valid observations"
+            )
         
         print(f"\n  Computing Temporal Stability (metric={self.scoring_metric})...")
         
-        # Step 1: Create windows
         print("  Creating chronological windows...")
         windows = self.create_windows(df)
         print(f"  Created {len(windows)} windows")
         
-        # Step 2: Get features
         features = self.get_feature_columns(df)
         print(f"  Found {len(features)} features")
         
         if not features:
             raise ValueError("No features found for analysis")
         
-        # Step 3: Compute window scores
         print("  Computing window scores...")
         window_scores = self.compute_window_scores(windows, features)
         
@@ -410,19 +391,15 @@ class TemporalStabilityEngine:
         
         print(f"  Computed {len(window_scores)} window-feature scores")
         
-        # Step 4: Compute temporal statistics
         print("  Computing temporal statistics...")
         temporal_stats = self.compute_temporal_statistics(window_scores)
         
-        # Step 5: Compute window summary
         print("  Computing window summary...")
         window_summary = self.compute_window_summary(window_scores)
         
-        # Step 6: Compute temporal index
         print("  Computing temporal index...")
         temporal_index = self.compute_temporal_index(temporal_stats)
         
-        # Summary
         summary = {
             'total_features': len(features),
             'windows': self.n_windows,
