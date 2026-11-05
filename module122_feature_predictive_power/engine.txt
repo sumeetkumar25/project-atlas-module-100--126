@@ -457,9 +457,29 @@ class FeaturePredictivePowerEngine:
     def compute(self, df: pd.DataFrame) -> FeaturePredictivePowerResult:
         """
         Main computation method.
+
+        Target extraction is delegated to get_target_series() at the
+        engine boundary so this module shares the canonical contract for
+        future_breakout with every other consumer. All metric computation
+        remains unchanged.
         """
+        from atlas.core.data_contracts import (
+            normalize_research_frame,
+            get_target_series,
+        )
+
         print("\n  Computing Feature Predictive Power...")
-        
+
+        # Normalize at the engine boundary.
+        #
+        # This ensures the engine produces correct results regardless of
+        # whether it was called through BaseResearchModule.run_dataframe()
+        # (which already normalizes) or directly (tests, notebooks).
+        df = normalize_research_frame(
+            df,
+            dataset_name="Module 122",
+        )
+
         # Get target
         if self.target_column not in df.columns:
             raise ValueError(
@@ -467,15 +487,21 @@ class FeaturePredictivePowerEngine:
             )
 
         # ------------------------------------------------------------------
-        # Remove rows where the target is undefined.
+        # Canonical target extraction via shared contract helper.
         #
         # future_breakout cannot be calculated for the final horizon bars
-        # because there is no future data available.
-        #
-        # These rows must not participate in statistical analysis.
+        # because there is no future data available. get_target_series()
+        # returns the column as a numeric Series, preserving NaN where the
+        # target is undefined.
         # ------------------------------------------------------------------
+        target = get_target_series(
+            df,
+            self.target_column,
+            dataset_name="Module 122",
+        )
 
-        target_valid_mask = df[self.target_column].notna()
+        # Remove rows where the target is undefined.
+        target_valid_mask = target.notna()
 
         invalid_target_rows = int((~target_valid_mask).sum())
 
@@ -487,8 +513,9 @@ class FeaturePredictivePowerEngine:
 
             df = df.loc[target_valid_mask].copy()
 
-        # Extract clean target
-        y = df[self.target_column].to_numpy()
+        # Extract clean target from the canonical series (not from the
+        # raw df column, which may have been object-typed on the way in).
+        y = target.loc[target_valid_mask].to_numpy()
 
         # Safety check
         if np.isnan(y).any():
