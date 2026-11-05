@@ -1,481 +1,38 @@
-# atlas/modules/module122_feature_predictive_power/engine.py
-"""
-Module 122 - Feature Predictive Power Engine
-
-Evaluates every feature individually against the prediction target.
-No machine learning. Only statistical evidence.
-
-Metrics:
-  1. Pearson Correlation: Linear relationship
-  2. Spearman Correlation: Monotonic relationship
-  3. Kendall Tau: Robust rank correlation
-  4. Mutual Information: Nonlinear information
-  5. Information Gain: Classification entropy reduction
-  6. ANOVA F Score: Class separation
-  7. ROC AUC: Classification performance
-  8. Point-Biserial Correlation: Continuous vs binary
-  9. Cohen's d: Effect size
-
-Output: Predictive score and PASS/WARNING/FAIL decision for each feature.
-"""
-
-import numpy as np
-import pandas as pd
-from dataclasses import dataclass
-from typing import Optional, Dict, Any, List, Tuple
-from scipy import stats
-from sklearn.metrics import roc_auc_score
-from sklearn.feature_selection import mutual_info_classif, f_classif
-import warnings
-warnings.filterwarnings('ignore')
-
-
-@dataclass
-class FeaturePredictivePowerResult:
-    """Results from feature predictive power analysis."""
-    predictive_table: pd.DataFrame
-    passed_features: List[str]
-    warning_features: List[str]
-    failed_features: List[str]
-    summary_statistics: Dict[str, Any]
-
-
-class FeaturePredictivePowerEngine:
-    """Core engine for feature predictive power analysis."""
-
-    # Columns to ignore (not features)
-    IGNORE_COLS = {
-        "timestamp", "date", "time", "index",
-        "open", "high", "low", "close", "volume",
-        "future_breakout"
-    }
-
-    # Predictive thresholds
-    PASS_THRESHOLD = 0.80
-    WARNING_THRESHOLD = 0.60
-
-    # Weights for predictive score
-    PREDICTIVE_WEIGHTS = {
-        "mutual_information": 0.30,
-        "roc_auc": 0.20,
-        "anova": 0.15,
-        "pearson": 0.10,
-        "spearman": 0.10,
-        "kendall": 0.05,
-        "point_biserial": 0.05,
-        "cohens_d": 0.05
-    }
-
-    def __init__(
-        self,
-        pass_threshold: float = 0.80,
-        warning_threshold: float = 0.60,
-        target_column: str = "future_breakout"
-    ):
-        """
-        Initialize the feature predictive power engine.
-        
-        Args:
-            pass_threshold: Score above this threshold = PASS
-            warning_threshold: Score above this threshold = WARNING
-            target_column: Name of the target column
-        """
-        self.pass_threshold = pass_threshold
-        self.warning_threshold = warning_threshold
-        self.target_column = target_column
-
-    def get_feature_columns(self, df: pd.DataFrame) -> List[str]:
-        """
-        Identify feature columns (exclude metadata and target).
-        """
-        features = [
-            c for c in df.columns
-            if c not in self.IGNORE_COLS
-            and c != self.target_column
-            and pd.api.types.is_numeric_dtype(df[c])
-            and df[c].nunique() > 1
-        ]
-        return features
-
-    def compute_pearson(self, X: np.ndarray, y: np.ndarray) -> float:
-        """Compute Pearson correlation."""
-        try:
-            corr, _ = stats.pearsonr(X, y)
-
-            if np.isnan(corr):
-                print("      Pearson: NaN returned")
-                return 0.0
-
-            return float(corr)
-
-        except Exception as e:
-            print(
-                f"      Pearson FAILED: "
-                f"{type(e).__name__}: {e}"
-            )
-            return 0.0
-
-    def compute_spearman(self, X: np.ndarray, y: np.ndarray) -> float:
-        """Compute Spearman correlation."""
-        try:
-            corr, _ = stats.spearmanr(X, y)
-
-            if np.isnan(corr):
-                print("      Spearman: NaN returned")
-                return 0.0
-
-            return float(corr)
-
-        except Exception as e:
-            print(
-                f"      Spearman FAILED: "
-                f"{type(e).__name__}: {e}"
-            )
-            return 0.0
-
-    def compute_kendall(self, X: np.ndarray, y: np.ndarray) -> float:
-        """Compute Kendall Tau."""
-        try:
-            corr, _ = stats.kendalltau(X, y)
-
-            if np.isnan(corr):
-                print("      Kendall: NaN returned")
-                return 0.0
-
-            return float(corr)
-
-        except Exception as e:
-            print(
-                f"      Kendall FAILED: "
-                f"{type(e).__name__}: {e}"
-            )
-            return 0.0
-
-    def compute_mutual_information(
-        self,
-        X: np.ndarray,
-        y: np.ndarray
-    ) -> float:
-        """Compute Mutual Information between feature and target."""
-        try:
-            X_reshaped = X.reshape(-1, 1)
-
-            mi = mutual_info_classif(
-                X_reshaped,
-                y,
-                random_state=42
-            )[0]
-
-            if np.isnan(mi):
-                print("      Mutual Information: NaN returned")
-                return 0.0
-
-            return float(max(0.0, min(1.0, mi)))
-
-        except Exception as e:
-            print(
-                f"      Mutual Information FAILED: "
-                f"{type(e).__name__}: {e}"
-            )
-            return 0.0
-
-    def compute_information_gain(
-        self,
-        X: np.ndarray,
-        y: np.ndarray
-    ) -> float:
-        """
-        Compute Information Gain (entropy reduction) for binary target.
-        """
-        try:
-            # Discretize feature for entropy calculation
-            n_bins = min(10, len(np.unique(X)))
-
-            if n_bins < 2:
-                print("      Information Gain: fewer than 2 unique bins")
-                return 0.0
-
-            X_disc = pd.qcut(
-                X,
-                q=n_bins,
-                labels=False,
-                duplicates='drop'
-            )
-
-            if len(np.unique(X_disc)) < 2:
-                print("      Information Gain: discretization produced <2 bins")
-                return 0.0
-
-            # Compute entropy of target
-            _, counts = np.unique(y, return_counts=True)
-            p = counts / len(y)
-
-            entropy_target = -np.sum(
-                p * np.log2(p + 1e-12)
-            )
-
-            # Compute conditional entropy
-            cond_entropy = 0
-
-            for val in np.unique(X_disc):
-                mask = X_disc == val
-
-                if np.sum(mask) == 0:
-                    continue
-
-                y_subset = y[mask]
-
-                _, counts_sub = np.unique(
-                    y_subset,
-                    return_counts=True
-                )
-
-                p_sub = counts_sub / len(y_subset)
-
-                entropy_sub = -np.sum(
-                    p_sub * np.log2(p_sub + 1e-12)
-                )
-
-                cond_entropy += (
-                    np.sum(mask) / len(y)
-                ) * entropy_sub
-
-            ig = entropy_target - cond_entropy
-
-            return float(max(0.0, min(1.0, ig)))
-
-        except Exception as e:
-            print(
-                f"      Information Gain FAILED: "
-                f"{type(e).__name__}: {e}"
-            )
-            return 0.0
-
-    def compute_anova(
-        self,
-        X: np.ndarray,
-        y: np.ndarray
-    ) -> float:
-        """Compute ANOVA F-score."""
-        try:
-            X_reshaped = X.reshape(-1, 1)
-
-            f_stat, _ = f_classif(
-                X_reshaped,
-                y
-            )
-
-            f_stat = f_stat[0]
-
-            if np.isnan(f_stat):
-                print("      ANOVA: NaN returned")
-                return 0.0
-
-            return float(
-                min(1.0, f_stat / (f_stat + 10.0))
-            )
-
-        except Exception as e:
-            print(
-                f"      ANOVA FAILED: "
-                f"{type(e).__name__}: {e}"
-            )
-            return 0.0
-
-    def compute_roc_auc(
-        self,
-        X: np.ndarray,
-        y: np.ndarray
-    ) -> float:
-        """
-        Compute ROC AUC with inverse predictor handling.
-
-        Treats inverse predictors (AUC < 0.5)
-        as equally informative by taking max(AUC, 1-AUC).
-        """
-        try:
-            unique_y = np.unique(y)
-
-            if len(unique_y) < 2:
-                print(
-                    f"      ROC AUC: target has only "
-                    f"{len(unique_y)} unique class"
-                )
-                return 0.0
-
-            auc = roc_auc_score(y, X)
-
-            if np.isnan(auc):
-                print("      ROC AUC: NaN returned")
-                return 0.0
-
-            # Treat inverse predictors as equally informative
-            auc = max(auc, 1.0 - auc)
-
-            return float(np.clip(auc, 0.5, 1.0))
-
-        except Exception as e:
-            print(
-                f"      ROC AUC FAILED: "
-                f"{type(e).__name__}: {e}"
-            )
-            return 0.0
-
-    def compute_point_biserial(
-        self,
-        X: np.ndarray,
-        y: np.ndarray
-    ) -> float:
-        """Compute Point-Biserial Correlation."""
-        try:
-            corr, _ = stats.pearsonr(X, y)
-
-            if np.isnan(corr):
-                print("      Point-Biserial: NaN returned")
-                return 0.0
-
-            return float(abs(corr))
-
-        except Exception as e:
-            print(
-                f"      Point-Biserial FAILED: "
-                f"{type(e).__name__}: {e}"
-            )
-            return 0.0
-
-    def compute_cohens_d(
-        self,
-        X: np.ndarray,
-        y: np.ndarray
-    ) -> float:
-        """Compute Cohen's d (effect size between two groups)."""
-        try:
-            group0 = X[y == 0]
-            group1 = X[y == 1]
-
-            if len(group0) < 2 or len(group1) < 2:
-                print(
-                    f"      Cohen's d: insufficient group size "
-                    f"(group0={len(group0)}, group1={len(group1)})"
-                )
-                return 0.0
-
-            n0, n1 = len(group0), len(group1)
-
-            mean0 = np.mean(group0)
-            mean1 = np.mean(group1)
-
-            var0 = np.var(group0, ddof=1)
-            var1 = np.var(group1, ddof=1)
-
-            pooled_std = np.sqrt(
-                (
-                    (n0 - 1) * var0 +
-                    (n1 - 1) * var1
-                )
-                / (n0 + n1 - 2)
-            )
-
-            if pooled_std == 0:
-                print("      Cohen's d: pooled standard deviation = 0")
-                return 0.0
-
-            d = abs(mean1 - mean0) / pooled_std
-
-            return float(min(1.0, d / 2.0))
-
-        except Exception as e:
-            print(
-                f"      Cohen's d FAILED: "
-                f"{type(e).__name__}: {e}"
-            )
-            return 0.0
-
-    def compute_predictive_score(self, metrics: Dict[str, float]) -> float:
-        """
-        Compute overall predictive score using weighted components.
-        """
-        score = (
-            self.PREDICTIVE_WEIGHTS['mutual_information'] * metrics.get('mutual_information', 0) +
-            self.PREDICTIVE_WEIGHTS['roc_auc'] * metrics.get('roc_auc', 0) +
-            self.PREDICTIVE_WEIGHTS['anova'] * metrics.get('anova', 0) +
-            self.PREDICTIVE_WEIGHTS['pearson'] * abs(metrics.get('pearson', 0)) +
-            self.PREDICTIVE_WEIGHTS['spearman'] * abs(metrics.get('spearman', 0)) +
-            self.PREDICTIVE_WEIGHTS['kendall'] * abs(metrics.get('kendall', 0)) +
-            self.PREDICTIVE_WEIGHTS['point_biserial'] * metrics.get('point_biserial', 0) +
-            self.PREDICTIVE_WEIGHTS['cohens_d'] * metrics.get('cohens_d', 0)
-        )
-        return np.clip(score, 0.0, 1.0)
-
-    def make_decision(self, score: float) -> str:
-        """
-        Make PASS/WARNING/FAIL decision based on predictive score.
-        """
-        if score >= self.pass_threshold:
-            return "PASS"
-        elif score >= self.warning_threshold:
-            return "WARNING"
-        else:
-            return "FAIL"
-
-    def compute_statistics(
-        self,
-        predictive_table: pd.DataFrame,
-        passed_features: List[str],
-        warning_features: List[str],
-        failed_features: List[str]
-    ) -> Dict[str, Any]:
-        """
-        Compute summary statistics.
-        """
-        total = len(predictive_table)
-        scores = predictive_table['predictive_score']
-        
-        stats_dict = {
-            'total_features': total,
-            'passed_count': len(passed_features),
-            'warning_count': len(warning_features),
-            'failed_count': len(failed_features),
-            'passed_percentage': len(passed_features) / total * 100 if total > 0 else 0,
-            'warning_percentage': len(warning_features) / total * 100 if total > 0 else 0,
-            'failed_percentage': len(failed_features) / total * 100 if total > 0 else 0,
-            'average_predictive_score': float(scores.mean()),
-            'median_predictive_score': float(scores.median()),
-            'min_predictive_score': float(scores.min()),
-            'max_predictive_score': float(scores.max()),
-            'best_feature': predictive_table.iloc[0]['feature'] if not predictive_table.empty else None,
-            'worst_feature': predictive_table.iloc[-1]['feature'] if not predictive_table.empty else None,
-            'best_score': float(predictive_table.iloc[0]['predictive_score']) if not predictive_table.empty else 0,
-            'worst_score': float(predictive_table.iloc[-1]['predictive_score']) if not predictive_table.empty else 0,
-            'average_mi': float(predictive_table['mutual_information'].mean()) if not predictive_table.empty else 0,
-            'average_roc_auc': float(predictive_table['roc_auc'].mean()) if not predictive_table.empty else 0,
-            'average_effect_size': float(predictive_table['cohens_d'].mean()) if not predictive_table.empty else 0
-        }
-        
-        return stats_dict
-
     def compute(self, df: pd.DataFrame) -> FeaturePredictivePowerResult:
         """
         Main computation method.
+
+        Target extraction is delegated to get_target_series() at the
+        engine boundary so this module shares the canonical contract for
+        future_breakout. All metric computation remains unchanged.
         """
+        from atlas.core.data_contracts import (
+            normalize_research_frame,
+            get_target_series,
+        )
+
         print("\n  Computing Feature Predictive Power...")
-        
-        # Get target
+
+        # Normalize at the engine boundary.
+        df = normalize_research_frame(
+            df,
+            dataset_name="Module 122",
+        )
+
         if self.target_column not in df.columns:
             raise ValueError(
                 f"Target column '{self.target_column}' not found"
             )
 
-        # ------------------------------------------------------------------
-        # Remove rows where the target is undefined.
-        #
-        # future_breakout cannot be calculated for the final horizon bars
-        # because there is no future data available.
-        #
-        # These rows must not participate in statistical analysis.
-        # ------------------------------------------------------------------
+        # Canonical target extraction.
+        target = get_target_series(
+            df,
+            self.target_column,
+            dataset_name="Module 122",
+        )
 
-        target_valid_mask = df[self.target_column].notna()
+        # Remove rows where the target is undefined.
+        target_valid_mask = target.notna()
 
         invalid_target_rows = int((~target_valid_mask).sum())
 
@@ -487,21 +44,19 @@ class FeaturePredictivePowerEngine:
 
             df = df.loc[target_valid_mask].copy()
 
-        # Extract clean target
-        y = df[self.target_column].to_numpy()
+        # Extract clean target from the canonical series.
+        y = target.loc[target_valid_mask].to_numpy()
 
-        # Safety check
         if np.isnan(y).any():
             raise ValueError(
                 f"Target '{self.target_column}' still contains "
                 f"{np.isnan(y).sum()} NaN values after cleaning"
             )
 
-        # Get features
         features = self.get_feature_columns(df)
 
         print(f"  Found {len(features)} features")
-        
+
         if not features:
             return FeaturePredictivePowerResult(
                 predictive_table=pd.DataFrame(),
@@ -529,12 +84,12 @@ class FeaturePredictivePowerEngine:
                     'average_effect_size': 0
                 }
             )
-        
+
         rows = []
         passed = []
         warning = []
         failed = []
-        
+
         for feature in features:
             X = df[feature].values
 
@@ -549,19 +104,11 @@ class FeaturePredictivePowerEngine:
             print(f"      y length: {len(y)}")
             print(f"      y unique: {np.unique(y)}")
 
-            y_values, y_counts = np.unique(
-                y,
-                return_counts=True
-            )
+            y_values, y_counts = np.unique(y, return_counts=True)
 
-            print(
-                f"      y distribution: "
-                f"{dict(zip(y_values, y_counts))}"
-            )
-
+            print(f"      y distribution: {dict(zip(y_values, y_counts))}")
             print(f"      X/Y same length: {len(X) == len(y)}")
 
-            # Compute all metrics
             pearson = self.compute_pearson(X, y)
             spearman = self.compute_spearman(X, y)
             kendall = self.compute_kendall(X, y)
@@ -571,8 +118,7 @@ class FeaturePredictivePowerEngine:
             roc_auc = self.compute_roc_auc(X, y)
             point_biserial = self.compute_point_biserial(X, y)
             cohens_d = self.compute_cohens_d(X, y)
-            
-            # Compile metrics
+
             metrics = {
                 'pearson': pearson,
                 'spearman': spearman,
@@ -584,19 +130,17 @@ class FeaturePredictivePowerEngine:
                 'point_biserial': point_biserial,
                 'cohens_d': cohens_d
             }
-            
-            # Compute predictive score
+
             predictive_score = self.compute_predictive_score(metrics)
             decision = self.make_decision(predictive_score)
-            
-            # Track decisions
+
             if decision == "PASS":
                 passed.append(feature)
             elif decision == "WARNING":
                 warning.append(feature)
             else:
                 failed.append(feature)
-            
+
             rows.append({
                 'feature': feature,
                 'pearson': pearson,
@@ -611,14 +155,14 @@ class FeaturePredictivePowerEngine:
                 'predictive_score': predictive_score,
                 'decision': decision
             })
-        
-        # Create predictive table
+
         predictive_table = pd.DataFrame(rows)
-        predictive_table = predictive_table.sort_values('predictive_score', ascending=False).reset_index(drop=True)
-        
-        # Compute statistics
+        predictive_table = predictive_table.sort_values(
+            'predictive_score', ascending=False
+        ).reset_index(drop=True)
+
         stats = self.compute_statistics(predictive_table, passed, warning, failed)
-        
+
         print(f"\n  Predictive Results:")
         print(f"    PASS:   {len(passed)} features")
         print(f"    WARNING: {len(warning)} features")
@@ -626,7 +170,7 @@ class FeaturePredictivePowerEngine:
         print(f"    Average Predictive Score: {stats['average_predictive_score']:.3f}")
         print(f"    Average MI: {stats['average_mi']:.3f}")
         print(f"    Average ROC AUC: {stats['average_roc_auc']:.3f}")
-        
+
         return FeaturePredictivePowerResult(
             predictive_table=predictive_table,
             passed_features=passed,
