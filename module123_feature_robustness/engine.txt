@@ -213,7 +213,15 @@ class FeatureRobustnessEngine:
     ) -> pd.DataFrame:
         """
         Compute feature scores across all regimes.
-        
+
+        Every (regime_type, regime_value, feature) triple gets its own
+        valid mask: the regime membership intersected with the target
+        being binary (0/1) and the feature being finite. This is
+        deliberately per-feature — a global complete-case filter across
+        all features would drop rows because an unrelated feature has a
+        NaN, which is a data-loss failure mode that cascades into
+        misleadingly small sample sizes and undefined AUCs.
+
         Returns:
             DataFrame with feature, regime, and score
         """
@@ -230,6 +238,26 @@ class FeatureRobustnessEngine:
             'Trending': trending
         }
         
+        # ------------------------------------------------------------
+        # Hoisted invariants:
+        #
+        # Both target_values and each feature's coerced Series are
+        # independent of (regime_type, regime_value). Computing them
+        # once per feature instead of once per (regime × feature)
+        # removes an O(regimes × features) redundant work factor.
+        # ------------------------------------------------------------
+        target_values = pd.to_numeric(
+            pd.Series(y, index=df.index),
+            errors="coerce"
+        )
+
+        target_is_binary = target_values.isin([0.0, 1.0])
+
+        feature_value_series = {
+            f: pd.to_numeric(df[f], errors="coerce")
+            for f in features
+        }
+        
         rows = []
         
         for regime_type, regime_series in regimes.items():
@@ -237,14 +265,32 @@ class FeatureRobustnessEngine:
                 if pd.isna(regime_value):
                     continue
                 
-                mask = regime_series == regime_value
-                y_regime = y[mask]
-                
-                if len(np.unique(y_regime)) < 2:
-                    continue
+                regime_mask = regime_series.eq(regime_value)
                 
                 for feature in features:
-                    X = df.loc[mask, feature].values
+                    feature_values = feature_value_series[feature]
+                    
+                    # Per-(regime, feature) valid mask:
+                    #   regime membership
+                    #   & binary target
+                    #   & finite feature
+                    valid_mask = (
+                        regime_mask
+                        & target_is_binary
+                        & np.isfinite(feature_values)
+                    )
+                    
+                    X = feature_values.loc[valid_mask].to_numpy(dtype=float)
+                    y_regime = target_values.loc[valid_mask].to_numpy(
+                        dtype=np.int8
+                    )
+                    
+                    if len(y_regime) == 0:
+                        continue
+                    
+                    if np.unique(y_regime).size != 2:
+                        continue
+                    
                     score = self.compute_feature_score(X, y_regime)
                     
                     rows.append({
@@ -252,7 +298,7 @@ class FeatureRobustnessEngine:
                         'regime_type': regime_type,
                         'regime': regime_value,
                         'score': score,
-                        'sample_size': np.sum(mask)
+                        'sample_size': int(len(y_regime))
                     })
         
         return pd.DataFrame(rows)
