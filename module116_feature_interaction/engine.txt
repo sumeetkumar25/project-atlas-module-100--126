@@ -96,28 +96,79 @@ class FeatureInteractionEngine:
     ) -> float:
         """
         Compute individual feature score using cross-validated ROC AUC.
+
+        Both the feature and target are coerced to numeric and filtered
+        on a shared mask (finite feature, finite binary target) before
+        scoring. This eliminates NaN/inf rows and any non-binary label
+        (such as -99) from the RandomForestClassifier inputs.
         """
-        X = df[feature].values.reshape(-1, 1)
-        
-        if len(np.unique(X)) < 2:
+        # ------------------------------------------------------------
+        # Coerce + align feature and target.
+        # ------------------------------------------------------------
+        X = pd.to_numeric(
+            df[feature],
+            errors="coerce"
+        ).to_numpy(dtype=float)
+
+        y = pd.to_numeric(
+            pd.Series(y, index=df.index),
+            errors="coerce"
+        ).to_numpy(dtype=float)
+
+        if len(X) != len(y):
+            raise ValueError(
+                "Feature and target lengths do not match"
+            )
+
+        valid_mask = (
+            np.isfinite(X)
+            & np.isfinite(y)
+            & np.isin(y, [0.0, 1.0])
+        )
+
+        X = X[valid_mask].reshape(-1, 1)
+        y = y[valid_mask].astype(np.int8)
+
+        # ------------------------------------------------------------
+        # Sample adequacy and class-balance gates.
+        # ------------------------------------------------------------
+        if len(y) < self.min_samples:
             return 0.0
-        
-        if len(np.unique(y)) < 2:
+
+        if np.unique(X).size < 2:
             return 0.0
-        
+
+        if np.unique(y).size != 2:
+            return 0.0
+
+        # np.bincount(y, minlength=2) -> [count_class0, count_class1].
+        # np.min() gives the minority-class count for this feature's
+        # valid subset. If either class is under-represented here, we
+        # cannot build a stratified CV fold and the score is 0.
+        class_counts = np.bincount(y, minlength=2)
+
+        if np.min(class_counts) < 2:
+            return 0.0
+
+        n_splits = min(self.cv_folds, int(np.min(class_counts)))
+
+        # Defensive: n_splits=1 would raise inside StratifiedKFold.
+        if n_splits < 2:
+            return 0.0
+
         try:
             rf = RandomForestClassifier(
                 n_estimators=50,
                 random_state=self.random_state,
                 n_jobs=1
             )
-            
+
             cv = StratifiedKFold(
-                n_splits=min(self.cv_folds, min(np.bincount(y))),
+                n_splits=n_splits,
                 shuffle=True,
                 random_state=self.random_state
             )
-            
+
             if self.metric == 'roc_auc':
                 scores = cross_val_score(rf, X, y, cv=cv, scoring='roc_auc')
             elif self.metric == 'accuracy':
@@ -126,7 +177,7 @@ class FeatureInteractionEngine:
                 scores = cross_val_score(rf, X, y, cv=cv, scoring='f1')
             else:
                 scores = cross_val_score(rf, X, y, cv=cv, scoring='roc_auc')
-            
+
             return float(np.mean(scores))
         except:
             return 0.0
@@ -140,25 +191,78 @@ class FeatureInteractionEngine:
     ) -> float:
         """
         Compute combined feature pair score using cross-validated ROC AUC.
+
+        The same mask is applied to feature_a, feature_b, and the target,
+        so the pair model receives three aligned finite arrays.
         """
-        X = df[[feature_a, feature_b]].values
-        
-        if len(np.unique(y)) < 2:
+        # ------------------------------------------------------------
+        # Coerce + align all three columns.
+        # ------------------------------------------------------------
+        Xa = pd.to_numeric(
+            df[feature_a],
+            errors="coerce"
+        ).to_numpy(dtype=float)
+
+        Xb = pd.to_numeric(
+            df[feature_b],
+            errors="coerce"
+        ).to_numpy(dtype=float)
+
+        y = pd.to_numeric(
+            pd.Series(y, index=df.index),
+            errors="coerce"
+        ).to_numpy(dtype=float)
+
+        if not (len(Xa) == len(Xb) == len(y)):
+            raise ValueError(
+                "Feature and target lengths do not match"
+            )
+
+        valid_mask = (
+            np.isfinite(Xa)
+            & np.isfinite(Xb)
+            & np.isfinite(y)
+            & np.isin(y, [0.0, 1.0])
+        )
+
+        X = np.column_stack([
+            Xa[valid_mask],
+            Xb[valid_mask],
+        ])
+        y = y[valid_mask].astype(np.int8)
+
+        # ------------------------------------------------------------
+        # Sample adequacy and class-balance gates.
+        # ------------------------------------------------------------
+        if len(y) < self.min_samples:
             return 0.0
-        
+
+        if np.unique(y).size != 2:
+            return 0.0
+
+        class_counts = np.bincount(y, minlength=2)
+
+        if np.min(class_counts) < 2:
+            return 0.0
+
+        n_splits = min(self.cv_folds, int(np.min(class_counts)))
+
+        if n_splits < 2:
+            return 0.0
+
         try:
             rf = RandomForestClassifier(
                 n_estimators=50,
                 random_state=self.random_state,
                 n_jobs=1
             )
-            
+
             cv = StratifiedKFold(
-                n_splits=min(self.cv_folds, min(np.bincount(y))),
+                n_splits=n_splits,
                 shuffle=True,
                 random_state=self.random_state
             )
-            
+
             if self.metric == 'roc_auc':
                 scores = cross_val_score(rf, X, y, cv=cv, scoring='roc_auc')
             elif self.metric == 'accuracy':
@@ -167,7 +271,7 @@ class FeatureInteractionEngine:
                 scores = cross_val_score(rf, X, y, cv=cv, scoring='f1')
             else:
                 scores = cross_val_score(rf, X, y, cv=cv, scoring='roc_auc')
-            
+
             return float(np.mean(scores))
         except:
             return 0.0
@@ -308,7 +412,37 @@ class FeatureInteractionEngine:
         if 'future_breakout' not in df.columns:
             raise ValueError("DataFrame must contain 'future_breakout' column")
         
-        y = df['future_breakout'].values
+        # ------------------------------------------------------------
+        # Clean the target before interaction analysis.
+        #
+        # Module 108 emits future_breakout as {0.0, 1.0, NaN}. Any
+        # legacy pipeline that still carries -99 (invalid future
+        # observation) also gets dropped here. Rows surviving this
+        # filter are the only ones eligible for scoring.
+        # ------------------------------------------------------------
+        target = pd.to_numeric(
+            df["future_breakout"],
+            errors="coerce"
+        )
+
+        valid_target = target.isin([0.0, 1.0])
+
+        df = df.loc[valid_target].copy()
+        y = target.loc[valid_target].to_numpy(dtype=np.int8)
+
+        if len(y) < self.min_samples:
+            raise ValueError(
+                f"Module116 requires at least {self.min_samples} "
+                f"valid target rows; received {len(y)}"
+            )
+
+        class_counts = np.bincount(y, minlength=2)
+
+        if np.min(class_counts) < 2:
+            raise ValueError(
+                "Module116 requires at least two observations "
+                "in each target class for stratified cross-validation"
+            )
         
         # Get features
         features = self.get_feature_columns(df)
