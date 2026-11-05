@@ -27,7 +27,21 @@ class RegimeRobustnessResearch(BaseResearchModule):
     """Main research module for regime robustness analysis."""
     
     MODULE_OUTPUT = "module113"
-    METADATA = RegimeRobustnessStatisticsEngine.METADATA
+    # Inherit the statistics-engine metadata fields (name, version,
+    # description, etc.) and declare the module's real upstream
+    # dependencies here.
+    #
+    # 103 supplies the market state / regime classification that this
+    # module conditions its analysis on. 108 supplies the
+    # future_breakout target required by REQUIRED_TARGETS below. Without
+    # the explicit 108 edge, topological sort could place Module 113
+    # ahead of 108, and the runner's ensure_targets() call would
+    # regenerate future_breakout from an unstable source instead of
+    # using Module 108's canonical label.
+    METADATA = {
+        **RegimeRobustnessStatisticsEngine.METADATA,
+        "depends_on": ["103", "108"],
+    }
     REQUIRED_TARGETS = ["future_breakout"]
     
     def __init__(
