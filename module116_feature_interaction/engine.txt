@@ -1,15 +1,8 @@
+# atlas/modules/module116_feature_interaction/engine.py
 """
 Module 116 - Feature Interaction Analysis Engine
 
 Measures synergy between feature pairs.
-
-Methods:
-  1. Individual Score: Predictive power of single feature
-  2. Combined Score: Predictive power of feature pair
-  3. Interaction Gain: Improvement from combining features
-  4. Synergy Score: Normalized interaction gain
-
-Output: Interaction table, matrix, and synergy rankings.
 """
 
 import numpy as np
@@ -37,14 +30,12 @@ class FeatureInteractionResult:
 class FeatureInteractionEngine:
     """Core engine for feature interaction analysis."""
 
-    # Columns to ignore (not features)
     IGNORE_COLS = {
         "timestamp", "date", "time", "index",
         "open", "high", "low", "close", "volume",
         "future_breakout"
     }
 
-    # Interaction type thresholds
     SYNERGY_THRESHOLD = 0.25
     MODERATE_THRESHOLD = 0.10
     CONFLICT_THRESHOLD = -0.05
@@ -56,24 +47,12 @@ class FeatureInteractionEngine:
         random_state: int = 42,
         metric: str = "roc_auc"
     ):
-        """
-        Initialize the feature interaction engine.
-        
-        Args:
-            min_samples: Minimum samples required
-            cv_folds: Number of cross-validation folds
-            random_state: Random seed for reproducibility
-            metric: Evaluation metric ('roc_auc', 'accuracy', 'f1')
-        """
         self.min_samples = min_samples
         self.cv_folds = cv_folds
         self.random_state = random_state
         self.metric = metric
 
     def get_feature_columns(self, df: pd.DataFrame) -> List[str]:
-        """
-        Identify feature columns (exclude metadata and target).
-        """
         features = [
             c for c in df.columns
             if c not in self.IGNORE_COLS
@@ -83,9 +62,6 @@ class FeatureInteractionEngine:
         return features
 
     def generate_pairs(self, features: List[str]) -> List[Tuple[str, str]]:
-        """
-        Generate all unique feature pairs.
-        """
         return list(combinations(features, 2))
 
     def compute_feature_score(
@@ -94,17 +70,6 @@ class FeatureInteractionEngine:
         feature: str,
         y: np.ndarray
     ) -> float:
-        """
-        Compute individual feature score using cross-validated ROC AUC.
-
-        Both the feature and target are coerced to numeric and filtered
-        on a shared mask (finite feature, finite binary target) before
-        scoring. This eliminates NaN/inf rows and any non-binary label
-        (such as -99) from the RandomForestClassifier inputs.
-        """
-        # ------------------------------------------------------------
-        # Coerce + align feature and target.
-        # ------------------------------------------------------------
         X = pd.to_numeric(
             df[feature],
             errors="coerce"
@@ -129,9 +94,6 @@ class FeatureInteractionEngine:
         X = X[valid_mask].reshape(-1, 1)
         y = y[valid_mask].astype(np.int8)
 
-        # ------------------------------------------------------------
-        # Sample adequacy and class-balance gates.
-        # ------------------------------------------------------------
         if len(y) < self.min_samples:
             return 0.0
 
@@ -141,10 +103,6 @@ class FeatureInteractionEngine:
         if np.unique(y).size != 2:
             return 0.0
 
-        # np.bincount(y, minlength=2) -> [count_class0, count_class1].
-        # np.min() gives the minority-class count for this feature's
-        # valid subset. If either class is under-represented here, we
-        # cannot build a stratified CV fold and the score is 0.
         class_counts = np.bincount(y, minlength=2)
 
         if np.min(class_counts) < 2:
@@ -152,7 +110,6 @@ class FeatureInteractionEngine:
 
         n_splits = min(self.cv_folds, int(np.min(class_counts)))
 
-        # Defensive: n_splits=1 would raise inside StratifiedKFold.
         if n_splits < 2:
             return 0.0
 
@@ -189,15 +146,6 @@ class FeatureInteractionEngine:
         feature_b: str,
         y: np.ndarray
     ) -> float:
-        """
-        Compute combined feature pair score using cross-validated ROC AUC.
-
-        The same mask is applied to feature_a, feature_b, and the target,
-        so the pair model receives three aligned finite arrays.
-        """
-        # ------------------------------------------------------------
-        # Coerce + align all three columns.
-        # ------------------------------------------------------------
         Xa = pd.to_numeric(
             df[feature_a],
             errors="coerce"
@@ -231,9 +179,6 @@ class FeatureInteractionEngine:
         ])
         y = y[valid_mask].astype(np.int8)
 
-        # ------------------------------------------------------------
-        # Sample adequacy and class-balance gates.
-        # ------------------------------------------------------------
         if len(y) < self.min_samples:
             return 0.0
 
@@ -276,14 +221,7 @@ class FeatureInteractionEngine:
         except:
             return 0.0
 
-    def classify_interaction(
-        self,
-        synergy: float,
-        gain: float
-    ) -> str:
-        """
-        Classify interaction type based on synergy and gain.
-        """
+    def classify_interaction(self, synergy: float, gain: float) -> str:
         if synergy > self.SYNERGY_THRESHOLD:
             return "Strong Synergy"
         elif synergy > self.MODERATE_THRESHOLD:
@@ -299,15 +237,9 @@ class FeatureInteractionEngine:
         features: List[str],
         y: np.ndarray
     ) -> pd.DataFrame:
-        """
-        Compute interactions for all feature pairs.
-        
-        Optimized: Individual feature scores are computed once and cached.
-        """
         pairs = self.generate_pairs(features)
         rows = []
         
-        # Cache individual feature scores (O(n) instead of O(2*n^2))
         print(f"  Computing individual feature scores for {len(features)} features...")
         feature_scores = {
             feature: self.compute_feature_score(df, feature, y)
@@ -316,26 +248,21 @@ class FeatureInteractionEngine:
         
         print(f"  Computing combined scores for {len(pairs)} pairs...")
         for feature_a, feature_b in pairs:
-            # Get cached individual scores
             score_a = feature_scores[feature_a]
             score_b = feature_scores[feature_b]
             
-            # Combined score
             combined_score = self.compute_combined_score(
                 df, feature_a, feature_b, y
             )
             
-            # Interaction gain
             max_individual = max(score_a, score_b)
             gain = combined_score - max_individual
             
-            # Synergy score (clamped to [0, 1])
             synergy = np.clip(
                 gain / (max_individual + 1e-12),
                 0.0, 1.0
             )
             
-            # Interaction type
             interaction_type = self.classify_interaction(synergy, gain)
             
             rows.append({
@@ -357,23 +284,17 @@ class FeatureInteractionEngine:
         interaction_table: pd.DataFrame,
         features: List[str]
     ) -> pd.DataFrame:
-        """
-        Build interaction matrix from interaction table.
-        """
         n = len(features)
         matrix = np.zeros((n, n))
         
-        # Create mapping from feature to index
         feature_to_idx = {f: i for i, f in enumerate(features)}
         
-        # Fill matrix with synergy scores
         for _, row in interaction_table.iterrows():
             i = feature_to_idx[row['feature_a']]
             j = feature_to_idx[row['feature_b']]
             matrix[i, j] = row['synergy_score']
             matrix[j, i] = row['synergy_score']
         
-        # Set diagonal to 1.0
         np.fill_diagonal(matrix, 1.0)
         
         return pd.DataFrame(matrix, index=features, columns=features)
@@ -383,46 +304,48 @@ class FeatureInteractionEngine:
         interaction_table: pd.DataFrame,
         top_n: int = 10
     ) -> pd.DataFrame:
-        """
-        Get top N interactions by synergy score.
-        """
         return interaction_table.nlargest(top_n, 'synergy_score')
 
     def compute_interaction_index(
         self,
         interaction_table: pd.DataFrame
     ) -> float:
-        """
-        Compute overall interaction index.
-        
-        Average synergy across all pairs.
-        """
         if interaction_table.empty:
             return 0.0
-        
         return float(interaction_table['synergy_score'].mean() * 100)
 
     def compute(self, df: pd.DataFrame) -> FeatureInteractionResult:
         """
         Main computation method.
+
+        Target extraction is delegated to get_target_series() so this
+        module shares the canonical contract for future_breakout with
+        every other consumer. The subsequent binary filter is preserved
+        because interactions require a strictly {0, 1} target — any
+        out-of-set label (e.g. a raw -99 that slipped past an older
+        producer) is excluded before scoring.
         """
+        from atlas.core.data_contracts import (
+            normalize_research_frame,
+            get_target_series,
+        )
+
         print("\n  Computing Feature Interactions...")
-        
-        # Get target
+
+        # Normalize at the engine boundary.
+        df = normalize_research_frame(
+            df,
+            dataset_name="Module 116",
+        )
+
         if 'future_breakout' not in df.columns:
             raise ValueError("DataFrame must contain 'future_breakout' column")
-        
-        # ------------------------------------------------------------
-        # Clean the target before interaction analysis.
-        #
-        # Module 108 emits future_breakout as {0.0, 1.0, NaN}. Any
-        # legacy pipeline that still carries -99 (invalid future
-        # observation) also gets dropped here. Rows surviving this
-        # filter are the only ones eligible for scoring.
-        # ------------------------------------------------------------
-        target = pd.to_numeric(
-            df["future_breakout"],
-            errors="coerce"
+
+        # Canonical target extraction.
+        target = get_target_series(
+            df,
+            "future_breakout",
+            dataset_name="Module 116",
         )
 
         valid_target = target.isin([0.0, 1.0])
@@ -444,32 +367,25 @@ class FeatureInteractionEngine:
                 "in each target class for stratified cross-validation"
             )
         
-        # Get features
         features = self.get_feature_columns(df)
         print(f"  Found {len(features)} features")
         
         if len(features) < 2:
             raise ValueError("Need at least 2 features for interaction analysis")
         
-        # Generate pairs
         n_pairs = len(features) * (len(features) - 1) // 2
         print(f"  Testing {n_pairs} feature pairs...")
         
-        # Compute interactions
         interaction_table = self.compute_interactions(df, features, y)
         
-        # Build interaction matrix
         interaction_matrix = self.build_interaction_matrix(
             interaction_table, features
         )
         
-        # Get top interactions
         top_interactions = self.get_top_interactions(interaction_table, top_n=10)
         
-        # Compute interaction index
         interaction_index = self.compute_interaction_index(interaction_table)
         
-        # Summary statistics
         strong_pairs = interaction_table[
             interaction_table['interaction_type'] == 'Strong Synergy'
         ]
