@@ -104,26 +104,71 @@ class RegimeRobustnessEngine:
         }
         return [col for col in df.columns if col not in exclude_cols and pd.api.types.is_numeric_dtype(df[col]) and df[col].nunique() > 1]
 
-    def compute_regime_scores(self, df: pd.DataFrame, regimes: pd.Series, features: List[str]) -> pd.DataFrame:
+    def compute_regime_scores(
+        self,
+        df: pd.DataFrame,
+        regimes: pd.Series,
+        features: List[str]
+    ) -> pd.DataFrame:
         rows = []
-        y = df[self.target_column].values
+
+        if self.target_column not in df.columns:
+            raise ValueError(
+                f"Missing target column: {self.target_column}"
+            )
+
+        target = pd.to_numeric(
+            df[self.target_column],
+            errors="coerce"
+        )
+
+        # Keep only valid binary target rows.
+        valid_target = target.isin([0.0, 1.0])
+
         for regime in regimes.unique():
             if pd.isna(regime):
                 continue
-            mask = regimes == regime
-            regime_size = np.sum(mask)
-            if regime_size < self.min_samples_per_regime:
-                continue
+
+            regime_mask = regimes.eq(regime)
+
             for feature in features:
-                X = df.loc[mask, feature].values.reshape(-1, 1)
-                y_regime = y[mask]
-                if len(np.unique(y_regime)) < 2:
+                feature_values = pd.to_numeric(
+                    df[feature],
+                    errors="coerce"
+                )
+
+                valid_mask = (
+                    regime_mask
+                    & valid_target
+                    & np.isfinite(feature_values)
+                )
+
+                y_regime = target.loc[valid_mask].to_numpy(
+                    dtype=np.int8
+                )
+                X_regime = feature_values.loc[
+                    valid_mask
+                ].to_numpy(dtype=float)
+
+                sample_size = len(y_regime)
+
+                if sample_size < self.min_samples_per_regime:
                     continue
+
+                if np.unique(y_regime).size != 2:
+                    continue
+
                 try:
-                    score = roc_auc_score(y_regime, X)
-                    rows.append({'regime': regime, 'feature': feature, 'score': float(score), 'sample_size': regime_size})
-                except:
+                    score = roc_auc_score(y_regime, X_regime)
+                    rows.append({
+                        "regime": regime,
+                        "feature": feature,
+                        "score": float(score),
+                        "sample_size": int(sample_size),
+                    })
+                except Exception:
                     continue
+
         return pd.DataFrame(rows)
 
     def compute_regime_statistics(self, scores: pd.DataFrame) -> pd.DataFrame:
