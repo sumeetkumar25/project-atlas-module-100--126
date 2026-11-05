@@ -372,6 +372,23 @@ class CrossTimeframeConsistencyResearch(BaseResearchModule):
                 "one dataset"
             )
 
+        from atlas.core.data_contracts import normalize_research_frame
+
+        validated_datasets = {}
+        for timeframe, frame in datasets.items():
+            validated_datasets[timeframe] = normalize_research_frame(
+                frame,
+                dataset_name=f"Module 112 / {timeframe}",
+                require_unique_timestamps=True,
+            )
+            print(
+                f"[MODULE 112 INPUT] "
+                f"{timeframe}: "
+                f"{len(validated_datasets[timeframe])} rows"
+            )
+
+        datasets = validated_datasets
+
         self._datasets = datasets
         self._output_dir = Path(output_dir) if output_dir else None
 
