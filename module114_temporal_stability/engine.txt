@@ -124,16 +124,56 @@ class TemporalStabilityEngine:
         Returns:
             Score (0-1 for normalized metrics)
         """
-        X = df[feature].values
-        
-        # Skip if constant
+        # ------------------------------------------------------------
+        # Numeric coercion and validation.
+        #
+        # Both the feature and the target are coerced to numeric,
+        # then filtered to a common valid mask:
+        #   - finite feature values
+        #   - finite target values
+        #   - binary target in {0.0, 1.0}
+        #
+        # This eliminates NaN, +/-inf, and any non-binary label such
+        # as -99 (invalid/incomplete future observation) before any
+        # score computation. Without this, roc_auc_score() can raise
+        # or silently mis-score on a mixed-label target.
+        # ------------------------------------------------------------
+        X = pd.to_numeric(
+            df[feature],
+            errors="coerce"
+        ).to_numpy(dtype=float)
+
+        y = pd.to_numeric(
+            pd.Series(y, index=df.index),
+            errors="coerce"
+        ).to_numpy(dtype=float)
+
+        if len(X) != len(y):
+            raise ValueError(
+                "Feature and target lengths do not match"
+            )
+
+        valid_mask = (
+            np.isfinite(X)
+            & np.isfinite(y)
+            & np.isin(y, [0.0, 1.0])
+        )
+
+        X = X[valid_mask]
+        y = y[valid_mask].astype(np.int8)
+
+        if len(y) < self.min_samples:
+            return 0.0
+
+        if np.unique(y).size != 2:
+            return 0.0
+
         if np.std(X) < 1e-12:
             return 0.0
-        
-        # Skip if target is constant
-        if len(np.unique(y)) < 2:
-            return 0.0
-        
+
+        # ------------------------------------------------------------
+        # Existing scoring branches (unchanged).
+        # ------------------------------------------------------------
         try:
             if self.scoring_metric == "auc":
                 score = roc_auc_score(y, X)
@@ -164,31 +204,72 @@ class TemporalStabilityEngine:
     ) -> pd.DataFrame:
         """
         Compute scores for all features across all windows.
-        
+
         Returns:
             DataFrame with window, feature, score, samples, positive_ratio
         """
         rows = []
         
         for window_idx, df in enumerate(windows):
-            y = df[self.target_column].values
+            y_raw = df[self.target_column].values
             
+            # Fast-path: if the raw window has fewer rows than min_samples,
+            # no feature can pass the per-feature cleaned min_samples check
+            # (cleaning only removes rows). Skip the window entirely.
             if len(df) < self.min_samples:
                 continue
-            
-            positive_ratio = np.mean(y) if len(y) > 0 else 0
             
             for feature in features:
                 if feature not in df.columns:
                     continue
                 
-                score = self.compute_window_score(df, feature, y)
+                score = self.compute_window_score(df, feature, y_raw)
+                
+                # --------------------------------------------------
+                # Compute cleaned sample statistics for THIS
+                # (window, feature) pair.
+                #
+                # This mirrors the cleaning logic in
+                # compute_window_score(): without it, `samples` would
+                # report the raw window length and `positive_ratio`
+                # would average the raw target (including NaN / -99),
+                # neither of which matches the data that actually fed
+                # roc_auc_score().
+                #
+                # The duplication is deliberate: compute_window_score()
+                # retains its single-value return contract, and this
+                # inline block supplies the honest statistics.
+                # --------------------------------------------------
+                X_check = pd.to_numeric(
+                    df[feature],
+                    errors="coerce"
+                ).to_numpy(dtype=float)
+                
+                y_check = pd.to_numeric(
+                    pd.Series(y_raw, index=df.index),
+                    errors="coerce"
+                ).to_numpy(dtype=float)
+                
+                valid_check = (
+                    np.isfinite(X_check)
+                    & np.isfinite(y_check)
+                    & np.isin(y_check, [0.0, 1.0])
+                )
+                
+                y_clean = y_check[valid_check]
+                
+                if len(y_clean) > 0:
+                    samples = int(len(y_clean))
+                    positive_ratio = float(y_clean.mean())
+                else:
+                    samples = 0
+                    positive_ratio = 0.0
                 
                 rows.append({
                     'window': window_idx + 1,
                     'feature': feature,
                     'score': score,
-                    'samples': len(df),
+                    'samples': samples,
                     'positive_ratio': positive_ratio
                 })
         
