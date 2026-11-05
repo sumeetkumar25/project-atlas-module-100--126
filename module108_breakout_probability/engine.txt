@@ -449,6 +449,40 @@ class BreakoutProbabilityEngine:
             )
         )
 
+        # Canonical binary target for downstream predictive analysis.
+        # +1 / -1 = breakout occurred; 0 = no breakout.
+        # -99 = invalid or incomplete future observation.
+        if "breakout_10" not in targets.columns:
+            raise ValueError(
+                "Module 108 is missing required target breakout_10"
+            )
+
+        breakout_10 = pd.to_numeric(
+            targets["breakout_10"],
+            errors="coerce",
+        )
+
+        unexpected = (
+            breakout_10.notna()
+            & ~breakout_10.isin([-99, -1, 0, 1])
+        )
+
+        if unexpected.any():
+            raise ValueError(
+                "Module 108 found unexpected breakout_10 labels"
+            )
+
+        targets["future_breakout"] = (
+            breakout_10
+            .map({
+                1: 1.0,
+                -1: 1.0,
+                0: 0.0,
+                -99: np.nan,
+            })
+            .astype("float64")
+        )
+
         all_data = []
 
         for horizon in self.horizons:
