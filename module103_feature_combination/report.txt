@@ -11,15 +11,24 @@ class FeatureCombinationReport:
     """Report generator for feature combination results."""
     
     @staticmethod
-    def generate(statistics, metadata=None, dataset_name="Unknown") -> str:
+    def generate(
+        statistics,
+        metadata=None,
+        dataset_name="Unknown",
+        validation_passed=False,
+    ) -> str:
         """
         Generate a formatted report.
-        
+
         Args:
             statistics: FeatureCombinationStatistics
             metadata: Optional metadata dict
             dataset_name: Name of the dataset
-            
+            validation_passed: Actual validation outcome. Must be True
+                for the report to state "Status: PASSED". Defaults to
+                False so a caller that forgets to pass it cannot
+                silently claim success.
+
         Returns:
             Formatted report string
         """
@@ -69,11 +78,12 @@ class FeatureCombinationReport:
         lines.append(f"  IC: {statistics.information_coefficient:.4f}")
         lines.append(f"  Overall Predictive Power: {statistics.predictive_power}")
         
-        # Validation
+        # Validation — reflects the ACTUAL outcome passed by the caller
         lines.append("\n" + "-" * 45)
         lines.append("VALIDATION")
         lines.append("-" * 45)
-        lines.append("  Status: PASSED")
+        status = "PASSED" if validation_passed else "FAILED"
+        lines.append(f"  Status: {status}")
         
         # Footer
         lines.append(f"\n  Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
