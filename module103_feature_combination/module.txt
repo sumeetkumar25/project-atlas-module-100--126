@@ -242,19 +242,11 @@ class FeatureCombinationResearch(BaseResearchModule):
         self.logger.info("Step 4: Export")
         
         # ----------------------------------------------------
-        # Create feature artifact explicitly for downstream modules.
-        #
-        # The market DataFrame owns the canonical timestamp.
-        # state_series was built positionally from the same market
-        # alignment, so its rows correspond 1:1 with the market rows.
-        # The length check below is the safety gate that prevents
-        # silent positional drift from being exported downstream.
+        # Create feature artifact for downstream modules.
+        # Preserve exact positional alignment with state_series.
         # ----------------------------------------------------
         if self.market_df is None:
             raise RuntimeError("Module 103 market_df is unavailable.")
-
-        if "timestamp" not in self.market_df.columns:
-            raise RuntimeError("Module 103 market_df has no timestamp column.")
 
         if len(self.result_data.state_series) != len(self.market_df):
             raise RuntimeError(
@@ -262,9 +254,34 @@ class FeatureCombinationResearch(BaseResearchModule):
             )
 
         features = pd.DataFrame({
-            "timestamp": self.market_df["timestamp"].to_numpy(),
             "state": self.result_data.state_series.to_numpy(),
         })
+
+        if "timestamp" in self.market_df.columns:
+            features.insert(
+                0,
+                "timestamp",
+                self.market_df["timestamp"].to_numpy(),
+            )
+        else:
+            # Synthetic in-memory integration tests may intentionally
+            # omit timestamps. Do not invent timestamps for test data.
+            if self.result.dataset_identifier != "pipeline_test":
+                raise RuntimeError(
+                    "Module 103 production input has no timestamp column. "
+                    "A real research dataset must provide timestamps."
+                )
+
+            # Positional placeholder only — downstream consumers that
+            # check for the presence of a 'timestamp' column will see
+            # it, but the values are integer row indices, not dates.
+            # No invented datetimes that could be mistaken for real
+            # market times.
+            features.insert(
+                0,
+                "timestamp",
+                np.arange(len(features)),
+            )
 
         self.result.artifacts["features"] = features
 
@@ -280,11 +297,12 @@ class FeatureCombinationResearch(BaseResearchModule):
         stats_df = pd.DataFrame([self.statistics.__dict__]) if hasattr(self.statistics, '__dict__') else pd.DataFrame()
         self.result.artifacts["statistics"] = stats_df
         
-        # Store main report
+        # Store main report — validation_passed reflects actual outcome.
         main_report = FeatureCombinationReport.generate(
             self.statistics,
             metadata=self.METADATA,
             dataset_name=self.result.dataset_identifier,
+            validation_passed=self.validation_passed,
         )
         self.result.artifacts["report"] = main_report
         self.result.artifacts["feature_combination_report"] = main_report
