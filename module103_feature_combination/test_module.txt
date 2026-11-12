@@ -22,50 +22,104 @@ from atlas.modules.module103_feature_combination.module import FeatureCombinatio
 def create_test_data(n=1000, seed=42):
     """Create synthetic test data."""
     np.random.seed(seed)
-    
+
     # Create features with some signal
     trend_score = np.random.uniform(0, 100, n)
     compression_score = np.random.uniform(0, 100, n)
-    hurst_exponent = np.random.uniform(0.3, 0.7, n)
+    hurst_exponent_rolling_60d = np.random.uniform(
+        0.35, 0.75, n
+    )
+    normalized_entropy_rolling_60d = np.random.uniform(
+        0.40, 0.95, n
+    )
     dfa_alpha = np.random.uniform(0.2, 0.8, n)
-    normalized_entropy = np.random.uniform(0.1, 0.9, n)
     mutual_information = np.random.uniform(0, 1, n)
-    
+
     # Create close price with some trend
     close = 100 + np.cumsum(np.random.randn(n) * 0.5)
-    
+
     df = pd.DataFrame({
         "trend_score": trend_score,
         "compression_score": compression_score,
-        "hurst_exponent": hurst_exponent,
+        "hurst_exponent_rolling_60d": hurst_exponent_rolling_60d,
+        "normalized_entropy_rolling_60d": normalized_entropy_rolling_60d,
         "dfa_alpha": dfa_alpha,
-        "normalized_entropy": normalized_entropy,
         "mutual_information": mutual_information,
         "close": close
     })
-    
+
     return df
 
 
-def test_engine_normalization():
-    """Test 1: Normalization works correctly."""
+def test_engine_causal_thresholds():
+    """Test 1: Expanding thresholds are causal (past-only)."""
     print("\n" + "=" * 60)
-    print("TEST 1: Normalization")
+    print("TEST 1: Causal Thresholds")
     print("=" * 60)
-    
+
     engine = FeatureCombinationEngine()
-    
-    # Test with uniform data
-    x = np.ones(100)
-    normalized = engine.normalize(x)
-    assert np.all(normalized == 0), "Constant series should normalize to 0"
-    
-    # Test with normal data
-    x = np.random.randn(1000) * 10 + 50
-    normalized = engine.normalize(x)
-    assert np.all((0 <= normalized) & (normalized <= 1)), "Values should be in [0,1]"
-    
-    print("  ✓ Normalization test passed")
+
+    np.random.seed(42)
+    n = 500
+
+    # Monotonic entropy series — allows us to reason about the
+    # expanding quantile behavior deterministically.
+    entropy = np.linspace(0.0, 1.0, n)
+    hurst = np.linspace(0.0, 1.0, n)
+
+    df = pd.DataFrame({
+        "trend_score": np.zeros(n),
+        "compression_score": np.zeros(n),
+        "hurst_exponent_rolling_60d": hurst,
+        "normalized_entropy_rolling_60d": entropy,
+    })
+
+    entropy_threshold, hurst_threshold = engine._compute_expanding_thresholds(df)
+
+    # Rows before min_periods must be NaN (no history yet).
+    assert entropy_threshold.isna().iloc[0], (
+        "First threshold row must be NaN — no history"
+    )
+
+    # Once enough history exists, the threshold must be defined.
+    assert not entropy_threshold.isna().iloc[-1], (
+        "Final threshold row must be finite — enough history"
+    )
+
+    # Causality check: the threshold at row t must depend only on
+    # rows < t. If we perturb row t+k, thresholds at rows <= t must
+    # be unchanged.
+    perturbed_entropy = entropy.copy()
+    perturbed_entropy[400] = 999.0
+
+    df_perturbed = df.copy()
+    df_perturbed["normalized_entropy_rolling_60d"] = perturbed_entropy
+
+    entropy_threshold_p, _ = engine._compute_expanding_thresholds(df_perturbed)
+
+    # Thresholds before row 400 must be identical between runs.
+    for t in [0, 100, 200, 300, 399]:
+        assert np.isclose(
+            entropy_threshold.iloc[t] if not np.isnan(entropy_threshold.iloc[t]) else 0.0,
+            entropy_threshold_p.iloc[t] if not np.isnan(entropy_threshold_p.iloc[t]) else 0.0,
+        ) or (
+            np.isnan(entropy_threshold.iloc[t])
+            and np.isnan(entropy_threshold_p.iloc[t])
+        ), (
+            f"Threshold at row {t} changed when row 400 changed — "
+            "thresholds are not causal"
+        )
+
+    # Thresholds at rows >= 401 may differ (they legitimately see the
+    # perturbed row).
+    # We don't assert inequality because the Q25 quantile may be robust
+    # to a single outlier at the 400th rank; equality here is fine.
+
+    print(f"  Warm-up rows (NaN threshold): "
+          f"{entropy_threshold.isna().sum()}")
+    print(f"  Valid threshold rows: "
+          f"{(~entropy_threshold.isna()).sum()}")
+    print("  ✓ Causal thresholds test passed")
     return True
 
 
@@ -74,30 +128,54 @@ def test_engine_state_creation():
     print("\n" + "=" * 60)
     print("TEST 2: State Creation")
     print("=" * 60)
-    
+
     engine = FeatureCombinationEngine()
-    
-    # Create test features - corrected hurst for row 3
+
+    # The engine now uses causal expanding-quantile thresholds for
+    # entropy and Hurst, so a meaningful number of warm-up bars is
+    # required before any state can be assigned. 500 rows is enough
+    # to produce several hundred classified rows while staying fast.
+    n = 500
+    np.random.seed(42)
+
     df = pd.DataFrame({
-        "trend_score": [70, 50, 90, 30],
-        "compression_score": [70, 30, 80, 20],
-        "normalized_entropy": [0.25, 0.50, 0.20, 0.80],
-        "hurst_exponent": [0.60, 0.40, 0.50, 0.30],  # Changed from 0.70 to 0.50
-        "dfa_alpha": [0.5, 0.5, 0.5, 0.5],
-        "mutual_information": [0.5, 0.5, 0.5, 0.5]
+        "trend_score": np.random.uniform(0, 100, n),
+        "compression_score": np.random.uniform(0, 100, n),
+        "normalized_entropy_rolling_60d": np.random.uniform(0.40, 0.95, n),
+        "hurst_exponent_rolling_60d": np.random.uniform(0.35, 0.75, n),
     })
-    
-    state = engine.create_state(df)
-    
-    # Check states are in range
-    assert np.all((0 <= state) & (state <= 15)), "States should be in [0,15]"
-    
-    # Check first row should have all conditions true: 8+4+2+1 = 15
-    assert state[0] == 15, f"Expected state 15, got {state[0]}"
-    
-    # Check third row: trend=1, compression=1, entropy_low=1, hurst=0 → 8+4+2 = 14
-    assert state[2] == 14, f"Expected state 14, got {state[2]}"
-    
+
+    entropy_threshold, hurst_threshold = engine._compute_expanding_thresholds(df)
+    state = engine.create_state(df, entropy_threshold, hurst_threshold)
+
+    # Array length must match input.
+    assert len(state) == n, (
+        f"State length {len(state)} != input length {n}"
+    )
+
+    # Non-NaN states must be integers in [0, 15].
+    finite = state[np.isfinite(state)]
+    assert len(finite) > 0, "Should have at least some classified rows"
+    assert np.all((finite >= 0) & (finite <= 15)), (
+        f"States out of [0, 15]: {np.unique(finite)}"
+    )
+
+    # Values must be integer-valued (as floats).
+    assert np.allclose(finite, np.round(finite)), (
+        "States should be integer-valued"
+    )
+
+    # Warm-up rows must be NaN (threshold not yet established).
+    assert np.isnan(state[0]), "First row should be NaN (no history)"
+
+    # With 500 random rows we should observe multiple distinct states.
+    unique_states = np.unique(finite)
+    assert len(unique_states) > 1, (
+        f"Expected multiple states, got {unique_states}"
+    )
+
+    print(f"  Classified rows: {len(finite)}/{n}")
+    print(f"  Unique states: {sorted(int(s) for s in unique_states)}")
     print("  ✓ State creation test passed")
     return True
 
@@ -107,24 +185,24 @@ def test_engine_full():
     print("\n" + "=" * 60)
     print("TEST 3: Full Engine Computation")
     print("=" * 60)
-    
-    df = create_test_data(n=500)
+
+    df = create_test_data(n=1000)
     engine = FeatureCombinationEngine(future_horizon=5, min_count=20)
-    
+
     features = df[engine.feature_columns]
     close = df["close"]
-    
+
     result = engine.compute(features, close)
-    
+
     # Check results
     assert result.total_states > 0, "Should have some states"
     assert result.sample_size > 0, "Should have samples"
     assert result.best_state >= 0, "Should have a best state"
     assert result.information_coefficient != 0, "IC should be calculated"
-    
+
     # Check state statistics
     assert not result.state_statistics.empty, "State statistics should not be empty"
-    
+
     print(f"  Total States: {result.total_states}")
     print(f"  Significant States: {result.significant_states}")
     print(f"  Best State: {result.best_state}")
@@ -138,24 +216,24 @@ def test_statistics():
     print("\n" + "=" * 60)
     print("TEST 4: Statistics Engine")
     print("=" * 60)
-    
-    df = create_test_data(n=500)
+
+    df = create_test_data(n=1000)
     engine = FeatureCombinationEngine(future_horizon=5, min_count=20)
     stats_engine = FeatureCombinationStatisticsEngine()
-    
+
     result = engine.compute(
         df[engine.feature_columns],
         df["close"]
     )
-    
+
     stats = stats_engine.analyze(result)
-    
+
     # Check statistics
     assert stats.total_states == result.total_states
     assert stats.significant_states == result.significant_states
     assert stats.best_state == result.best_state
     assert stats.predictive_power in ["Strong", "Moderate", "Weak", "None"]
-    
+
     print(f"  Predictive Power: {stats.predictive_power}")
     print(f"  Total States: {stats.total_states}")
     print("  ✓ Statistics test passed")
@@ -167,20 +245,20 @@ def test_validator():
     print("\n" + "=" * 60)
     print("TEST 5: Validator")
     print("=" * 60)
-    
-    df = create_test_data(n=500)
+
+    df = create_test_data(n=1000)
     engine = FeatureCombinationEngine(future_horizon=5, min_count=20)
     stats_engine = FeatureCombinationStatisticsEngine()
-    
+
     result = engine.compute(
         df[engine.feature_columns],
         df["close"]
     )
     stats = stats_engine.analyze(result)
-    
+
     passed = run_validation(result, stats)
     assert passed
-    
+
     print("  ✓ Validator test passed")
     return True
 
@@ -190,17 +268,17 @@ def test_pipeline():
     print("\n" + "=" * 60)
     print("TEST 6: Full Pipeline")
     print("=" * 60)
-    
-    df = create_test_data(n=300)
+
+    df = create_test_data(n=1000)
     research = FeatureCombinationResearch(future_horizon=5, min_count=20)
     result = research.run_dataframe(df, dataset_id="pipeline_test")
-    
+
     assert result.status == "completed"
     assert "state_statistics" in result.artifacts
     assert "feature_combination_report" in result.artifacts
     assert "state_report" in result.artifacts
     assert result.statistics.get("validation_passed") == True
-    
+
     print(f"  Total States: {result.statistics.get('total_states')}")
     print(f"  Predictive Power: {result.statistics.get('predictive_power')}")
     print("  ✓ Full pipeline test passed")
@@ -213,28 +291,28 @@ def main():
     print("PROJECT ATLAS - MODULE 103 INTEGRATION TEST")
     print("Feature Combination Engine")
     print("=" * 70)
-    
+
     results = {}
-    
-    results["normalization"] = test_engine_normalization()
+
+    results["causal_thresholds"] = test_engine_causal_thresholds()
     results["state_creation"] = test_engine_state_creation()
     results["full_engine"] = test_engine_full()
     results["statistics"] = test_statistics()
     results["validator"] = test_validator()
     results["pipeline"] = test_pipeline()
-    
+
     print("\n" + "=" * 70)
     print("RESULTS")
     print("=" * 70)
-    
+
     for name, ok in results.items():
         print(f"  {'✓' if ok else '✗'} {name}")
-    
+
     passed = sum(results.values())
     total = len(results)
-    
+
     print(f"\n  {passed}/{total} tests passed")
-    
+
     if passed == total:
         print("\n✓ Module 103 VALIDATED")
         return 0
