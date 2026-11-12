@@ -55,6 +55,7 @@ class FeatureCombinationResearch(BaseResearchModule):
         self.result_data = None
         self.statistics = None
         self.state_report = None
+        self.validation_passed = False
     
     def _register_pipeline_steps(self):
         """Register pipeline steps."""
@@ -217,35 +218,61 @@ class FeatureCombinationResearch(BaseResearchModule):
     def _validate(self) -> Dict[str, Any]:
         """Step 3: Validation."""
         self.logger.info("Step 3: Validation")
-        passed = run_validation(self.result_data, self.statistics)
+
+        passed = bool(
+            run_validation(
+                self.result_data,
+                self.statistics,
+            )
+        )
+
+        self.validation_passed = passed
+
+        if not passed:
+            raise RuntimeError("Module 103 validation failed.")
+
         self.logger.success("Validation complete")
-        return {"validation_passed": passed}
+
+        return {
+            "validation_passed": True,
+        }
     
     def _export_results(self) -> Dict[str, Any]:
         """Step 4: Export."""
         self.logger.info("Step 4: Export")
         
         # ----------------------------------------------------
-        # Create feature artifact explicitly for downstream modules
-        # Only export what downstream modules need
+        # Create feature artifact explicitly for downstream modules.
+        #
+        # The market DataFrame owns the canonical timestamp.
+        # state_series was built positionally from the same market
+        # alignment, so its rows correspond 1:1 with the market rows.
+        # The length check below is the safety gate that prevents
+        # silent positional drift from being exported downstream.
         # ----------------------------------------------------
-        if self.market_df is not None and hasattr(self.result_data, 'state_series'):
-            # Export only timestamp and state for downstream modules
-            features = pd.DataFrame({
-                "timestamp": self.market_df["timestamp"].values,
-                "state": self.result_data.state_series.values
-            })
-            
-            self.result.artifacts["features"] = features
-            self.logger.info(f"Created feature artifact with timestamp and state ({len(features)} rows)")
-        elif hasattr(self.result_data, 'state_series'):
-            # If market_df is None, create from state_series only
-            features = pd.DataFrame({
-                "state": self.result_data.state_series.values
-            })
-            self.result.artifacts["features"] = features
-            self.logger.info("Created feature artifact from state_series only")
-        
+        if self.market_df is None:
+            raise RuntimeError("Module 103 market_df is unavailable.")
+
+        if "timestamp" not in self.market_df.columns:
+            raise RuntimeError("Module 103 market_df has no timestamp column.")
+
+        if len(self.result_data.state_series) != len(self.market_df):
+            raise RuntimeError(
+                "Module 103 state series and market data row counts differ."
+            )
+
+        features = pd.DataFrame({
+            "timestamp": self.market_df["timestamp"].to_numpy(),
+            "state": self.result_data.state_series.to_numpy(),
+        })
+
+        self.result.artifacts["features"] = features
+
+        self.logger.info(
+            f"Created feature artifact with timestamp and state "
+            f"({len(features)} rows)"
+        )
+
         # Store state statistics
         self.result.artifacts["state_statistics"] = self.result_data.state_statistics
         
@@ -262,8 +289,8 @@ class FeatureCombinationResearch(BaseResearchModule):
         self.result.artifacts["report"] = main_report
         self.result.artifacts["feature_combination_report"] = main_report
         
-        # Store validation result (required artifact)
-        self.result.artifacts["validation"] = True
+        # Store validation result (required artifact) — reflects actual outcome.
+        self.result.artifacts["validation"] = self.validation_passed
         
         # Store state report
         self.result.artifacts["state_report"] = self.state_report
@@ -277,7 +304,14 @@ class FeatureCombinationResearch(BaseResearchModule):
             "min_count": self.engine.min_count,
             "total_states": self.result_data.total_states,
             "significant_states": self.result_data.significant_states,
-            "information_coefficient": self.result_data.information_coefficient
+            "information_coefficient": self.result_data.information_coefficient,
+            "rolling_window_days": 60,
+            "threshold_method": "causal_expanding_quantiles",
+            "threshold_min_history": getattr(
+                self.engine,
+                "threshold_min_history",
+                getattr(self.engine, "MIN_THRESHOLD_OBSERVATIONS", 20),
+            ),
         }
         
         # Store detailed results as dict
