@@ -839,6 +839,17 @@ class FeatureInteractionEngine:
 
             # ------------------------------------------------------
             # Bootstrap resampling with fixed sample size
+            #
+            # Index is reset on the bootstrap sample so downstream
+            # code (and any future alignment-sensitive step) sees a
+            # clean RangeIndex rather than duplicated row labels
+            # from the original DataFrame.
+            #
+            # The target is handled symmetrically:
+            #   - if y is a pandas Series, take .iloc[indices] and
+            #     reset the index before converting to numpy
+            #   - if y is already a numpy array, use positional
+            #     indexing directly
             # ------------------------------------------------------
             indices = rng.integers(
                 0,
@@ -846,12 +857,16 @@ class FeatureInteractionEngine:
                 size=bootstrap_size
             )
 
-            X_boot = (
-                X.iloc[indices]
-                .reset_index(drop=True)
-            )
+            X_sample = X.iloc[indices].reset_index(drop=True)
 
-            y_boot = y[indices]
+            if isinstance(y, pd.Series):
+                y_sample = (
+                    y.iloc[indices]
+                    .reset_index(drop=True)
+                    .to_numpy()
+                )
+            else:
+                y_sample = np.asarray(y)[indices]
 
             try:
 
@@ -864,16 +879,16 @@ class FeatureInteractionEngine:
 
                 mi_scores = (
                     self.compute_mutual_information_interaction(
-                        X_boot,
-                        y_boot,
+                        X_sample,
+                        y_sample,
                         pairs
                     )
                 )
 
                 anova_scores = (
                     self.compute_two_way_anova(
-                        X_boot,
-                        y_boot,
+                        X_sample,
+                        y_sample,
                         pairs
                     )
                 )
