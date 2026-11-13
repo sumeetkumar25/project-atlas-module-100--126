@@ -814,6 +814,25 @@ class FeatureInteractionEngine:
                 ]
             )
 
+        # ----------------------------------------------------------
+        # Pre-bootstrap normalization.
+        #
+        # Reset the index of X and y so that .iloc[indices] sampling
+        # is unambiguous.
+        #
+        # allow_duplicate_labels=True on X prevents pandas from
+        # raising when the bootstrap sampling produces repeated index
+        # labels. This is not a semantic flag — the reset_index() call
+        # inside the loop replaces the sampled index with a fresh
+        # RangeIndex before any downstream method sees it.
+        # ----------------------------------------------------------
+        X = X.reset_index(drop=True).set_flags(allows_duplicate_labels=True)
+
+        if isinstance(y, pd.Series):
+            y = y.reset_index(drop=True)
+        else:
+            y = pd.Series(np.asarray(y))
+
         counts = defaultdict(int)
 
         successful = 0
@@ -839,17 +858,6 @@ class FeatureInteractionEngine:
 
             # ------------------------------------------------------
             # Bootstrap resampling with fixed sample size
-            #
-            # Index is reset on the bootstrap sample so downstream
-            # code (and any future alignment-sensitive step) sees a
-            # clean RangeIndex rather than duplicated row labels
-            # from the original DataFrame.
-            #
-            # The target is handled symmetrically:
-            #   - if y is a pandas Series, take .iloc[indices] and
-            #     reset the index before converting to numpy
-            #   - if y is already a numpy array, use positional
-            #     indexing directly
             # ------------------------------------------------------
             indices = rng.integers(
                 0,
@@ -858,15 +866,24 @@ class FeatureInteractionEngine:
             )
 
             X_sample = X.iloc[indices].reset_index(drop=True)
+            y_sample = y.iloc[indices].reset_index(drop=True)
 
-            if isinstance(y, pd.Series):
-                y_sample = (
-                    y.iloc[indices]
-                    .reset_index(drop=True)
-                    .to_numpy()
-                )
-            else:
-                y_sample = np.asarray(y)[indices]
+            # ------------------------------------------------------
+            # Convert y_sample to a numpy array.
+            #
+            # compute_two_way_anova() indexes the target with a boolean
+            # numpy mask: `y[valid]`. On a Series that boolean-indexing
+            # operation preserves the sampled labels, which are
+            # non-contiguous after masking. The subsequent
+            # `pd.DataFrame({"a": ndarray, "b": ndarray, "y": Series})`
+            # would then union the two index spaces and introduce NaN
+            # rows — corrupting the ANOVA interaction residual.
+            #
+            # Converting to numpy at the boundary makes the downstream
+            # contract unambiguous: every compute_* method receives a
+            # positional ndarray target.
+            # ------------------------------------------------------
+            y_sample_array = y_sample.to_numpy()
 
             try:
 
@@ -880,7 +897,7 @@ class FeatureInteractionEngine:
                 mi_scores = (
                     self.compute_mutual_information_interaction(
                         X_sample,
-                        y_sample,
+                        y_sample_array,
                         pairs
                     )
                 )
@@ -888,7 +905,7 @@ class FeatureInteractionEngine:
                 anova_scores = (
                     self.compute_two_way_anova(
                         X_sample,
-                        y_sample,
+                        y_sample_array,
                         pairs
                     )
                 )
