@@ -187,6 +187,7 @@ def test_pipeline():
     print("=" * 60)
 
     df = pd.DataFrame([{
+        "timestamp": pd.Timestamp("2024-01-01 00:00:00"),
         "atr_percentile": 0.15,
         "std_percentile": 0.12,
         "normalized_entropy": 0.75,
@@ -200,7 +201,17 @@ def test_pipeline():
     assert result.status == "completed"
     assert "compression_score_statistics" in result.artifacts
     assert "compression_score_report" in result.artifacts
+    assert "features" in result.artifacts
     assert result.statistics.get("validation_passed") == True
+
+    feature_df = result.artifacts["features"]
+    assert list(feature_df.columns) == [
+        "timestamp",
+        "compression_score",
+    ]
+    assert len(feature_df) == len(df)
+    assert feature_df["timestamp"].equals(df["timestamp"])
+    assert feature_df["compression_score"].notna().all()
 
     print(f"  Compression Score: {result.statistics.get('compression_score'):.2f}/100")
     print("  ✓ Full pipeline test passed")
