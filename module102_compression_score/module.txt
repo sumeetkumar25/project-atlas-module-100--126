@@ -224,10 +224,17 @@ class CompressionScoreResearch(BaseResearchModule):
         stats_df = self.stats_engine.summary_dataframe(self.statistics)
         self.result.artifacts["compression_score_statistics"] = stats_df
 
-        # Export feature DataFrame for downstream modules
+        # Export feature DataFrame for downstream modules.
+        #
+        # The timestamp column is included so downstream modules
+        # receive positionally-aligned date information alongside
+        # the per-row compression_score. Without it, the artifact
+        # cannot be joined onto market data by any consumer that
+        # does not already know the exact row ordering.
         if self.compression_scores is not None and len(self.compression_scores) > 0:
             feature_df = pd.DataFrame(
                 {
+                    "timestamp": self.df["timestamp"],
                     "compression_score": self.compression_scores,
                 },
                 index=self.df.index,
