@@ -583,8 +583,22 @@ class FeatureImportanceEngine:
             if (i + 1) % 10 == 0 or i == n_bootstrap - 1:
                 print(f"\r  Bootstrap progress: {i+1}/{n_bootstrap}", end="", flush=True)
             
-            # Bootstrap sample
-            X_boot, y_boot = resample(X, y, replace=True, random_state=self.random_state + i)
+            # Bootstrap sample via NumPy positional indexing.
+            #
+            # Replaces sklearn.utils.resample() to avoid its Pandas
+            # index-preservation behavior, which can produce duplicate
+            # index labels that leak into downstream Series alignment.
+            # Sampling positionally with numpy keeps the bootstrap
+            # DataFrame's index a plain RangeIndex, and the target
+            # array is drawn with the exact same indices so X/y stay
+            # paired observation-by-observation.
+            rng = np.random.RandomState(self.random_state + i)
+            indices = rng.choice(len(X), size=len(X), replace=True)
+            X_boot = pd.DataFrame(
+                X.to_numpy()[indices],
+                columns=X.columns
+            )
+            y_boot = np.asarray(y)[indices]
             
             try:
                 # Compute fast importance methods only (no permutation)
