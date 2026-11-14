@@ -508,6 +508,21 @@ def test_statistics():
     assert stats.top_pair == result.statistics['top_pair']
     assert stats.top_score == result.statistics['top_score']
     assert stats.top_stability == result.statistics['top_stability']
+
+    # Regression guard: top_stability must reflect the stability of the
+    # top-ranked pair specifically, not the maximum stability across
+    # all pairs. Prior versions returned stability_scores.max(), which
+    # could silently disagree with the top-pair block in the report.
+    expected_stability = float(
+        result.stability_scores.get(stats.top_pair, 0.0)
+    )
+    assert np.isclose(
+        stats.top_stability,
+        expected_stability,
+        rtol=0,
+        atol=1e-12
+    )
+
     assert stats.interaction_entropy >= 0
     assert len(stats.top_10_pairs) > 0
     assert stats.method_agreement == result.statistics['method_agreement']
