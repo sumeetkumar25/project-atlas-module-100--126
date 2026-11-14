@@ -3,6 +3,8 @@
 Module 100 - Integration Test
 
 Tests trend score engine, statistics, validator, report, and pipeline.
+FIXED: test_pipeline fixture carries a deterministic timestamp so the
+       synthetic DataFrame satisfies the framework's dataframe contract.
 """
 
 import sys
@@ -152,7 +154,11 @@ def test_pipeline():
     print("TEST 6: Full Pipeline")
     print("=" * 60)
 
+    # The synthetic row now carries an explicit timestamp so the fixture
+    # satisfies the framework's dataframe contract (timestamp + payload
+    # columns) before it reaches TrendScoreResearch.run_dataframe().
     df = pd.DataFrame([{
+        "timestamp": pd.Timestamp("2020-01-01"),
         "trend_persistence": 0.65,
         "hurst_exponent": 0.58,
         "dfa_alpha": 0.57,
