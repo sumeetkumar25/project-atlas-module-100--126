@@ -16,6 +16,9 @@ Design principles:
 Two-tier estimator configuration:
 - Observed score:      n_estimators=100, cv_folds=5  (accurate)
 - Monte Carlo tests:   resampling_estimators=30, resampling_cv_folds=3  (faster)
+
+FIXED: _bootstrap_iter builds X_boot from a NumPy array so bootstrap
+       sampling cannot trigger pandas duplicate-label errors.
 """
 
 import warnings
@@ -454,9 +457,23 @@ class MonteCarloValidationEngine:
             size=len(X),
         )
 
-        X_boot = (
-            X.iloc[indices]
-            .reset_index(drop=True)
+        # ---------------------------------------------------------
+        # Build the bootstrap sample from a NumPy array rather
+        # than via .iloc. Bootstrap sampling produces duplicate
+        # positional indices by design, and pandas .iloc on a
+        # frame with duplicate labels can raise
+        # "cannot reindex on an axis with duplicate labels".
+        #
+        # Materializing X.to_numpy(copy=False) once and then
+        # rebuilding a fresh DataFrame with a clean RangeIndex
+        # and the original column names avoids that failure
+        # mode entirely while preserving dtype and column order.
+        # ---------------------------------------------------------
+        X_values = X.to_numpy(copy=False)
+
+        X_boot = pd.DataFrame(
+            X_values[indices],
+            columns=X.columns,
         )
 
         y_boot = y[indices]
