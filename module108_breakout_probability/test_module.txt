@@ -21,44 +21,46 @@ from atlas.modules.module108_breakout_probability.module import BreakoutProbabil
 def create_test_data(n=1000, seed=42):
     """
     Create synthetic test data with states and OHLCV.
-    
+
     Args:
         n: Number of samples
         seed: Random seed for reproducibility
-        
+
     Returns:
-        DataFrame with OHLCV and state columns
+        DataFrame with OHLCV, state, and a deterministic timestamp column
     """
     np.random.seed(seed)
-    
+
     # Generate random states (0-15)
     states = np.random.randint(0, 16, n)
-    
+
     # Generate price data with trends and volatility
     close = 100 + np.cumsum(np.random.randn(n) * 0.5)
     high = close + np.abs(np.random.randn(n) * 1.0)
     low = close - np.abs(np.random.randn(n) * 1.0)
     open_price = close - np.random.randn(n) * 0.3
-    
+
     df = pd.DataFrame({
         "open": open_price,
         "high": high,
         "low": low,
         "close": close,
-        "state": states
+        "state": states,
     })
-    
+
+    # Deterministic market timestamps are REQUIRED by Module 108.
+    # They must exist before Module 108 computes forward targets so that
+    # row-level labels cannot be shifted or mis-aligned.
     df.insert(
         0,
         "timestamp",
         pd.date_range(
-            start="2024-01-01",
-            periods=n,
+            "2020-01-01",
+            periods=len(df),
             freq="15min",
-            tz="UTC",
         ),
     )
-    
+
     return df
 
 
@@ -67,25 +69,25 @@ def test_engine_atr():
     print("\n" + "=" * 60)
     print("TEST 1: ATR Calculation")
     print("=" * 60)
-    
+
     engine = BreakoutProbabilityEngine(atr_period=14)
-    
+
     # Create simple price series
     high = pd.Series(np.random.randn(100) * 2 + 100)
     low = pd.Series(np.random.randn(100) * 2 + 98)
     close = pd.Series(np.random.randn(100) * 1 + 99)
-    
+
     atr = engine.calculate_atr(high, low, close)
-    
+
     # Check ATR is non-negative
     assert np.all(atr.dropna() >= 0)
-    
+
     # Check ATR has correct length
     assert len(atr) == 100
-    
+
     # Check first few values are NaN (warmup period)
-    assert pd.isna(atr.iloc[:engine.atr_period-1]).all()
-    
+    assert pd.isna(atr.iloc[:engine.atr_period - 1]).all()
+
     print("  ✓ ATR calculation test passed")
     return True
 
@@ -95,32 +97,32 @@ def test_engine_breakout_detection():
     print("\n" + "=" * 60)
     print("TEST 2: Breakout Detection")
     print("=" * 60)
-    
+
     engine = BreakoutProbabilityEngine(horizons=[1], k_multiplier=1.0)
-    
+
     close = pd.Series([100, 101, 102, 103, 104, 105, 106, 107, 108, 109])
     high = pd.Series([101, 102, 103, 104, 105, 106, 107, 108, 109, 110])
     low = pd.Series([99, 100, 101, 102, 103, 104, 105, 106, 107, 108])
     atr = pd.Series([2.0] * 10)
-    
+
     labels = engine.detect_breakouts(high, low, close, atr, 1)
-    
+
     # Check labels are valid.
     # -99 = insufficient future data
     # -1  = down breakout
     #  0  = no breakout
     #  1  = up breakout
     assert np.all(np.isin(labels, [-99, -1, 0, 1]))
-    
+
     # Final observation has no future bar.
     assert labels[-1] == -99
-    
+
     # All observations except the final one are evaluable
     # assuming valid ATR.
     assert np.all(np.isin(labels[:-1], [-1, 0, 1]))
-    
+
     assert len(labels) == 10
-    
+
     print(f"  Breakout labels sample: {labels[:5]}")
     print("  ✓ Breakout detection test passed")
     return True
@@ -131,38 +133,32 @@ def test_engine_state_probabilities():
     print("\n" + "=" * 60)
     print("TEST 3: State Probability Computation")
     print("=" * 60)
-    
+
     engine = BreakoutProbabilityEngine(horizons=[1], min_samples=1)
-    
-    # Create test data with all label types (up, down, no breakout)
+
     states = np.array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9])
     breakout_labels = np.array([1, -1, 1, -1, 0, 1, -1, 0, 1, -1])
-    
-    # FIXED: Added missing horizon parameter
+
     state_data = engine.compute_state_breakout_probabilities(
         states,
         breakout_labels,
         horizon=1
     )
-    
-    # Check all states are present
+
     assert len(state_data) == 16
-    
-    # Check state 0 has data (up breakout)
+
     assert state_data[0]['has_samples']
     assert state_data[0]['samples'] == 1
     assert state_data[0]['up_count'] == 1
     assert state_data[0]['down_count'] == 0
     assert state_data[0]['no_breakout_count'] == 0
-    
-    # Check state 4 has data (no breakout)
+
     assert state_data[4]['has_samples']
     assert state_data[4]['samples'] == 1
     assert state_data[4]['up_count'] == 0
     assert state_data[4]['down_count'] == 0
     assert state_data[4]['no_breakout_count'] == 1
-    
-    # Check probabilities sum to 1
+
     for state in range(10):
         if state_data[state]['has_samples']:
             prob_sum = (
@@ -171,7 +167,7 @@ def test_engine_state_probabilities():
                 state_data[state]['no_breakout_prob']
             )
             assert np.isclose(prob_sum, 1.0)
-    
+
     print("  ✓ State probability computation test passed")
     return True
 
@@ -181,34 +177,25 @@ def test_engine_wilson_interval():
     print("\n" + "=" * 60)
     print("TEST 4: Wilson Confidence Interval")
     print("=" * 60)
-    
+
     engine = BreakoutProbabilityEngine()
-    
-    # Test with 50 successes out of 100
+
     lower_50, upper_50 = engine.wilson_interval(50, 100)
-    
-    # Confidence interval should be valid
     assert 0 <= lower_50 <= upper_50 <= 1
-    
-    # Should be roughly centered around 0.5
     assert 0.4 < lower_50 < 0.6
     assert 0.4 < upper_50 < 0.6
-    
     print(f"  Wilson interval for 50/100: ({lower_50:.3f}, {upper_50:.3f})")
-    
-    # Test with 0 successes
+
     lower_0, upper_0 = engine.wilson_interval(0, 100)
     assert 0 <= lower_0 <= upper_0 <= 1
     assert upper_0 > lower_0
-    
     print(f"  Wilson interval for 0/100: ({lower_0:.3f}, {upper_0:.3f})")
-    
-    # Test with 100 successes
+
     lower_100, upper_100 = engine.wilson_interval(100, 100)
     assert 0 <= lower_100 <= upper_100 <= 1
     assert lower_100 < upper_100
-    
     print(f"  Wilson interval for 100/100: ({lower_100:.3f}, {upper_100:.3f})")
+
     print("  ✓ Wilson interval test passed")
     return True
 
@@ -218,35 +205,35 @@ def test_engine_compute():
     print("\n" + "=" * 60)
     print("TEST 5: Full Engine Computation")
     print("=" * 60)
-    
+
     engine = BreakoutProbabilityEngine(
         horizons=[1, 3, 5],
         atr_period=14,
         k_multiplier=1.0,
         min_samples=10
     )
-    
+
     df = create_test_data(n=500)
-    
+
     result = engine.compute(
         high=df["high"],
         low=df["low"],
         close=df["close"],
         states=df["state"].values
     )
-    
-    # Check results
+
     assert not result.state_probabilities.empty
     assert not result.state_statistics.empty
     assert len(result.horizons) == 3
     assert result.sample_size == 500
     assert result.atr_period == 14
     assert result.k_multiplier == 1.0
-    
-    # Check all states are represented
     assert len(result.state_probabilities) == 16
-    
-    print(f"  States with samples: {result.state_statistics[result.state_statistics['total_samples'] > 0].shape[0]}/16")
+
+    print(
+        f"  States with samples: "
+        f"{result.state_statistics[result.state_statistics['total_samples'] > 0].shape[0]}/16"
+    )
     print("  ✓ Full engine test passed")
     return True
 
@@ -256,30 +243,26 @@ def test_statistics():
     print("\n" + "=" * 60)
     print("TEST 6: Statistics Engine")
     print("=" * 60)
-    
-    engine = BreakoutProbabilityEngine(
-        horizons=[1, 3, 5],
-        min_samples=10
-    )
+
+    engine = BreakoutProbabilityEngine(horizons=[1, 3, 5], min_samples=10)
     stats_engine = BreakoutStatisticsEngine()
-    
+
     df = create_test_data(n=500)
-    
+
     result = engine.compute(
         high=df["high"],
         low=df["low"],
         close=df["close"],
         states=df["state"].values
     )
-    
+
     stats = stats_engine.analyze(result)
-    
-    # Check statistics
+
     assert stats.total_states == 16
     assert stats.states_with_samples > 0
     assert stats.sample_size == 500
     assert stats.horizons == [1, 3, 5]
-    
+
     print(f"  States with samples: {stats.states_with_samples}")
     print(f"  Max up state: {stats.max_up_prob_state} ({stats.max_up_prob_value:.2%})")
     print(f"  Max down state: {stats.max_down_prob_state} ({stats.max_down_prob_value:.2%})")
@@ -292,27 +275,23 @@ def test_validator():
     print("\n" + "=" * 60)
     print("TEST 7: Validator")
     print("=" * 60)
-    
-    engine = BreakoutProbabilityEngine(
-        horizons=[1, 3, 5],
-        min_samples=10
-    )
+
+    engine = BreakoutProbabilityEngine(horizons=[1, 3, 5], min_samples=10)
     stats_engine = BreakoutStatisticsEngine()
-    
+
     df = create_test_data(n=500)
-    
+
     result = engine.compute(
         high=df["high"],
         low=df["low"],
         close=df["close"],
         states=df["state"].values
     )
-    
+
     stats = stats_engine.analyze(result)
-    
     passed = run_validation(result, stats)
     assert passed
-    
+
     print("  ✓ Validator test passed")
     return True
 
@@ -322,26 +301,26 @@ def test_pipeline():
     print("\n" + "=" * 60)
     print("TEST 8: Full Pipeline")
     print("=" * 60)
-    
+
     df = create_test_data(n=300)
 
-    # Supply deterministic market timestamps for the integration test.
+    # The helper already provides deterministic timestamps, but we keep
+    # this override so the test asserts against a fully explicit time axis.
     df["timestamp"] = pd.date_range(
-        start="2024-01-01",
+        "2020-01-01",
         periods=len(df),
         freq="15min",
-        tz="UTC",
     )
-    
+
     research = BreakoutProbabilityResearch(
         horizons=[1, 3, 5],
         atr_period=14,
         k_multiplier=1.0,
         min_samples=10
     )
-    
+
     result = research.run_dataframe(df, dataset_id="pipeline_test")
-    
+
     assert result.status == "completed"
     assert "state_probabilities" in result.artifacts
     assert "state_statistics" in result.artifacts
@@ -349,7 +328,7 @@ def test_pipeline():
     assert "state_report" in result.artifacts
     assert "ranking_report" in result.artifacts
     assert result.statistics.get("validation_passed") == True
-    
+
     print(f"  States with samples: {result.statistics.get('states_with_samples')}")
     print(f"  Max up state: {result.statistics.get('max_up_prob_state')}")
     print(f"  Max down state: {result.statistics.get('max_down_prob_state')}")
@@ -362,34 +341,30 @@ def test_probability_sums():
     print("\n" + "=" * 60)
     print("TEST 9: Probability Sums")
     print("=" * 60)
-    
-    engine = BreakoutProbabilityEngine(
-        horizons=[1, 3, 5, 10, 20],
-        min_samples=10
-    )
-    
+
+    engine = BreakoutProbabilityEngine(horizons=[1, 3, 5, 10, 20], min_samples=10)
+
     df = create_test_data(n=500)
-    
+
     result = engine.compute(
         high=df["high"],
         low=df["low"],
         close=df["close"],
         states=df["state"].values
     )
-    
-    # Check probability sums for all states and horizons
+
     for _, row in result.state_probabilities.iterrows():
         state = int(row['state'])
         for h in result.horizons:
             up = row[f'up_prob_{h}']
             down = row[f'down_prob_{h}']
             no = row[f'no_breakout_prob_{h}']
-            
+
             if row[f'samples_{h}'] > 0:
                 prob_sum = up + down + no
                 assert np.isclose(prob_sum, 1.0, atol=1e-8), \
                     f"State {state}, horizon {h}: sum={prob_sum}"
-    
+
     print("  ✓ All probability sums equal 1")
     print("  ✓ Probability sums test passed")
     return True
@@ -401,10 +376,7 @@ def test_engine_invalid_future_window():
     print("TEST: Invalid Future Window")
     print("=" * 60)
 
-    engine = BreakoutProbabilityEngine(
-        horizons=[1],
-        k_multiplier=1.0
-    )
+    engine = BreakoutProbabilityEngine(horizons=[1], k_multiplier=1.0)
 
     close = pd.Series([100, 101, 102, 103, 104])
     high = pd.Series([101, 102, 103, 104, 105])
@@ -419,15 +391,11 @@ def test_engine_invalid_future_window():
         horizon=1
     )
 
-    # Four observations have a future bar.
     assert np.all(np.isin(labels[:4], [-1, 0, 1]))
-
-    # Last observation has no future bar.
     assert labels[4] == -99
 
     print("  ✓ Final unevaluable observation correctly marked -99")
     print("  ✓ Invalid future-window test passed")
-
     return True
 
 
@@ -466,9 +434,7 @@ def test_all_horizons_invalid_tail():
     print("TEST: All Horizons Invalid Tail")
     print("=" * 60)
 
-    engine = BreakoutProbabilityEngine(
-        horizons=[1, 3, 5]
-    )
+    engine = BreakoutProbabilityEngine(horizons=[1, 3, 5])
 
     df = create_test_data(n=100)
     targets = engine.build_all_breakout_targets(
@@ -490,13 +456,7 @@ def test_canonical_artifact_contract():
     Test that Module 108 produces all canonical Atlas artifacts.
 
     Required framework artifacts:
-
-        features
-        statistics
-        report
-        validation
-
-    Module-specific artifacts must remain available as well.
+        features, statistics, report, validation
     """
     print("\n" + "=" * 60)
     print("TEST: Canonical Artifact Contract")
@@ -511,89 +471,46 @@ def test_canonical_artifact_contract():
         min_samples=10,
     )
 
-    result = research.run_dataframe(
-        df,
-        dataset_id="artifact_contract_test",
-    )
+    result = research.run_dataframe(df, dataset_id="artifact_contract_test")
 
-    # --------------------------------------------------------------
     # Canonical Atlas artifacts
-    # --------------------------------------------------------------
-
-    required_artifacts = [
-        "features",
-        "statistics",
-        "report",
-        "validation",
-    ]
-
-    for artifact_name in required_artifacts:
-        assert artifact_name in result.artifacts, (
-            f"Missing canonical artifact: {artifact_name}"
-        )
-
-    # --------------------------------------------------------------
-    # Validate features
-    # --------------------------------------------------------------
+    for artifact_name in ["features", "statistics", "report", "validation"]:
+        assert artifact_name in result.artifacts, f"Missing canonical artifact: {artifact_name}"
 
     features = result.artifacts["features"]
-
     assert isinstance(features, pd.DataFrame)
     assert len(features) == len(df)
-
     assert "timestamp" in features.columns
     assert "state" in features.columns
 
     for horizon in [1, 3, 5]:
         column = f"breakout_{horizon}"
         assert column in features.columns
-
         values = features[column].dropna().unique()
         assert np.all(np.isin(values, [-99, -1, 0, 1]))
 
-    # --------------------------------------------------------------
-    # Validate statistics
-    # --------------------------------------------------------------
-
     statistics = result.artifacts["statistics"]
-
     assert isinstance(statistics, pd.DataFrame)
     assert len(statistics) == 1
 
-    # --------------------------------------------------------------
-    # Validate report
-    # --------------------------------------------------------------
-
     report = result.artifacts["report"]
-
     assert isinstance(report, str)
     assert "MODULE 108" in report
 
-    # --------------------------------------------------------------
-    # Validate validation artifact
-    # --------------------------------------------------------------
-
     validation = result.artifacts["validation"]
-
     assert isinstance(validation, bool)
     assert validation is True
 
-    # --------------------------------------------------------------
     # Module-specific artifacts
-    # --------------------------------------------------------------
-
-    module_specific_artifacts = [
+    module_specific = [
         "state_probabilities",
         "state_statistics",
         "breakout_probability_report",
         "state_report",
         "ranking_report",
     ]
-
-    for artifact_name in module_specific_artifacts:
-        assert artifact_name in result.artifacts, (
-            f"Missing Module 108 artifact: {artifact_name}"
-        )
+    for artifact_name in module_specific:
+        assert artifact_name in result.artifacts, f"Missing Module 108 artifact: {artifact_name}"
 
     print("  ✓ Canonical artifacts present")
     print("  ✓ Module-specific artifacts present")
@@ -602,7 +519,6 @@ def test_canonical_artifact_contract():
     print("  ✓ Report artifact valid")
     print("  ✓ Validation artifact valid")
     print("  ✓ Canonical artifact contract passed")
-
     return True
 
 
@@ -614,7 +530,6 @@ def main():
     print("=" * 70)
 
     results = {}
-
     results["atr"] = test_engine_atr()
     results["breakout_detection"] = test_engine_breakout_detection()
     results["state_probabilities"] = test_engine_state_probabilities()
