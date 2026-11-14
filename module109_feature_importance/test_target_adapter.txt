@@ -1,0 +1,80 @@
+
+import pandas as pd
+import pytest
+
+from atlas.modules.module109_feature_importance.target_adapter import (
+    attach_breakout_target,
+)
+
+
+def make_frames():
+    timestamps = pd.date_range(
+        "2026-01-01", periods=4, freq="15min"
+    )
+
+    df = pd.DataFrame({
+        "timestamp": timestamps,
+        "close": [100, 101, 102, 103],
+    })
+
+    targets = pd.DataFrame({
+        "timestamp": timestamps,
+        "breakout_5": [1, -1, 0, -99],
+    })
+
+    return df, targets
+
+
+def test_correct_timestamp_alignment():
+    df, targets = make_frames()
+
+    result = attach_breakout_target(df, targets, horizon=5)
+
+    assert result["future_breakout"].tolist() == [1, -1, 0, -99]
+    assert result["timestamp"].equals(df["timestamp"])
+
+
+def test_rejects_equal_length_misaligned_timestamps():
+    df, targets = make_frames()
+
+    targets.loc[2, "timestamp"] += pd.Timedelta(minutes=15)
+
+    with pytest.raises(ValueError, match="TIMESTAMP ALIGNMENT FAILURE"):
+        attach_breakout_target(df, targets, horizon=5)
+
+
+def test_rejects_missing_timestamp():
+    df, targets = make_frames()
+
+    targets = targets.drop(columns=["timestamp"])
+
+    with pytest.raises(ValueError, match="no timestamp column"):
+        attach_breakout_target(df, targets, horizon=5)
+
+
+def test_rejects_duplicate_timestamps():
+    df, targets = make_frames()
+
+    targets.loc[2, "timestamp"] = targets.loc[1, "timestamp"]
+
+    with pytest.raises(ValueError, match="duplicates"):
+        attach_breakout_target(df, targets, horizon=5)
+
+
+def test_rejects_different_row_counts():
+    df, targets = make_frames()
+
+    targets = targets.iloc[:-1].copy()
+
+    with pytest.raises(ValueError, match="row counts differ"):
+        attach_breakout_target(df, targets, horizon=5)
+
+
+def test_original_dataframe_is_not_modified():
+    df, targets = make_frames()
+    original_columns = df.columns.tolist()
+
+    attach_breakout_target(df, targets, horizon=5)
+
+    assert df.columns.tolist() == original_columns
+    assert "future_breakout" not in df.columns
