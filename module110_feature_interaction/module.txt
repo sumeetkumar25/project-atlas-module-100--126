@@ -151,16 +151,41 @@ class FeatureInteractionResearch(BaseResearchModule):
         Module 110 consumes:
             future_breakout
         """
-
         df = self.df.copy()
 
-        # ----------------------------------------------------------
-        # Attach Module 108 breakout target when available.
-        # ----------------------------------------------------------
         if self.feature_df is not None:
+            # BaseResearchModule removes timestamp from feature_df
+            # after storing it for dependency alignment checks.
+            dependency_ts = getattr(
+                self, "_dependency_timestamps", None
+            )
+
+            if dependency_ts is None:
+                raise ValueError(
+                    "Cannot attach Module 108 targets: "
+                    "dependency timestamps are unavailable."
+                )
+
+            if len(dependency_ts) != len(self.feature_df):
+                raise ValueError(
+                    "Dependency timestamp count does not match feature_df."
+                )
+
+            breakout_targets = self.feature_df.copy().reset_index(drop=True)
+
+            breakout_targets.insert(
+                0,
+                "timestamp",
+                dependency_ts.reset_index(drop=True)
+            )
+
+            from atlas.modules.module109_feature_importance.target_adapter import (
+                attach_breakout_target
+            )
+
             df = attach_breakout_target(
                 df=df,
-                breakout_targets=self.feature_df,
+                breakout_targets=breakout_targets,
                 horizon=self.target_horizon,
                 target_column=self.engine.target_column,
             )
