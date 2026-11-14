@@ -10,8 +10,31 @@ class FeatureInteractionReport:
     """Report generator for feature interaction results."""
     
     @staticmethod
-    def generate(statistics, metadata=None, dataset_name="Unknown") -> str:
-        """Generate a formatted report."""
+    def generate(
+        statistics,
+        metadata=None,
+        dataset_name="Unknown",
+        validation_passed=None
+    ) -> str:
+        """
+        Generate a formatted report.
+
+        Args:
+            statistics: FeatureInteractionStatistics
+            metadata: Optional metadata dict
+            dataset_name: Name of the dataset
+            validation_passed:
+                True  → Status: PASSED
+                False → Status: FAILED
+                None  → Status: NOT RUN
+
+            Defaults to None (NOT RUN) so a caller that forgets to
+            pass the actual validation outcome produces a visible
+            "NOT RUN" marker rather than a false PASSED.
+
+        Returns:
+            Formatted report string
+        """
         lines = []
         
         lines.append("=" * 55)
@@ -100,11 +123,16 @@ class FeatureInteractionReport:
         else:
             lines.append("  Methods show low agreement on interaction rankings")
         
-        # Validation
+        # Validation — reflects the ACTUAL outcome, not a hardcoded claim.
         lines.append("\n" + "-" * 45)
         lines.append("VALIDATION")
         lines.append("-" * 45)
-        lines.append("  Status: PASSED")
+        if validation_passed is True:
+            lines.append("  Status: PASSED")
+        elif validation_passed is False:
+            lines.append("  Status: FAILED")
+        else:
+            lines.append("  Status: NOT RUN")
         
         # Footer
         lines.append(f"\n  Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
