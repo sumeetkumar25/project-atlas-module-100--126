@@ -449,31 +449,55 @@ class BreakoutProbabilityEngine:
             )
         )
 
+        # --------------------------------------------------------------
         # Canonical binary target for downstream predictive analysis.
-        # +1 / -1 = breakout occurred; 0 = no breakout.
-        # -99 = invalid or incomplete future observation.
-        if "breakout_10" not in targets.columns:
+        #
+        # +1 / -1 = breakout occurred
+        #      0 = no breakout
+        #    -99 = invalid or incomplete future observation
+        #
+        # Which horizon provides the canonical target:
+        #
+        #   1. Horizon 10 when available — preserves the historical
+        #      breakout_10-based semantics for the default and any
+        #      configuration that includes 10.
+        #   2. Otherwise, the longest requested horizon — ensures the
+        #      module still produces a usable future_breakout target
+        #      for custom horizon sets such as [1, 3, 5].
+        #
+        # Without this selection logic, any horizons list missing
+        # 10 would raise "missing required target breakout_10" even
+        # though valid targets were constructed for every requested
+        # horizon.
+        # --------------------------------------------------------------
+
+        canonical_horizon = (
+            10 if 10 in self.horizons else max(self.horizons)
+        )
+        canonical_column = f"breakout_{canonical_horizon}"
+
+        if canonical_column not in targets.columns:
             raise ValueError(
-                "Module 108 is missing required target breakout_10"
+                f"Module 108 is missing canonical target {canonical_column}"
             )
 
-        breakout_10 = pd.to_numeric(
-            targets["breakout_10"],
+        canonical_labels = pd.to_numeric(
+            targets[canonical_column],
             errors="coerce",
         )
 
         unexpected = (
-            breakout_10.notna()
-            & ~breakout_10.isin([-99, -1, 0, 1])
+            canonical_labels.notna()
+            & ~canonical_labels.isin([-99, -1, 0, 1])
         )
 
         if unexpected.any():
             raise ValueError(
-                "Module 108 found unexpected breakout_10 labels"
+                f"Module 108 found unexpected labels in {canonical_column}"
             )
 
         targets["future_breakout"] = (
-            breakout_10
+            canonical_labels
             .map({
                 1: 1.0,
                 -1: 1.0,
