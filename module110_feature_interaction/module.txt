@@ -128,6 +128,7 @@ class FeatureInteractionResearch(BaseResearchModule):
         self.result_data = None
         self.statistics = None
         self.matrix_report = None
+        self.validation_passed = None
     
     def _register_pipeline_steps(self):
         """Register pipeline steps."""
@@ -281,9 +282,20 @@ class FeatureInteractionResearch(BaseResearchModule):
     def _validate(self) -> Dict[str, Any]:
         """Step 3: Validation."""
         self.logger.info("Step 3: Validation")
-        passed = run_validation(self.result_data, self.statistics)
-        self.logger.success("Validation complete")
-        return {"validation_passed": passed}
+
+        self.validation_passed = run_validation(
+            self.result_data,
+            self.statistics
+        )
+
+        if self.validation_passed:
+            self.logger.success("Validation passed")
+        else:
+            self.logger.warning("Validation failed")
+
+        return {
+            "validation_passed": self.validation_passed
+        }
     
     def _export_results(self) -> Dict[str, Any]:
         """
