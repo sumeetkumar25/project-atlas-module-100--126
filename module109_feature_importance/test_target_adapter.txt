@@ -1,4 +1,3 @@
-
 import pandas as pd
 import pytest
 
@@ -37,7 +36,7 @@ def test_correct_timestamp_alignment():
 def test_rejects_equal_length_misaligned_timestamps():
     df, targets = make_frames()
 
-    targets.loc[2, "timestamp"] += pd.Timedelta(minutes=15)
+    targets.loc[2, "timestamp"] += pd.Timedelta(minutes=5)
 
     with pytest.raises(ValueError, match="TIMESTAMP ALIGNMENT FAILURE"):
         attach_breakout_target(df, targets, horizon=5)
