@@ -12,6 +12,11 @@ Analyzes every feature and computes a quality score based on:
   - Entropy
 
 Output: Quality score and PASS/WARNING/FAIL decision for each feature.
+
+FIXED: get_feature_columns() now excludes constant columns
+       (nunique(dropna=True) <= 1). Constant columns carry no
+       information and must not be reported as usable predictive
+       features.
 """
 
 import numpy as np
@@ -58,7 +63,7 @@ class FeatureQualityEngine:
     ):
         """
         Initialize the feature quality engine.
-        
+
         Args:
             pass_threshold: Score above this threshold = PASS
             warning_threshold: Score above this threshold = WARNING, below = FAIL
@@ -71,14 +76,22 @@ class FeatureQualityEngine:
     def get_feature_columns(self, df):
         features = []
 
-        for c in df.columns:
-            if c in self.IGNORE_COLS:
+        for column in df.columns:
+            if column in self.IGNORE_COLS:
                 continue
 
-            is_numeric = pd.api.types.is_numeric_dtype(df[c])
+            if not pd.api.types.is_numeric_dtype(df[column]):
+                continue
 
-            if is_numeric:
-                features.append(c)
+            # Constant columns carry no predictive information and
+            # must never be reported as usable features. Filter them
+            # out at detection time so downstream quality metrics
+            # (variance, entropy, skew, outliers) are never applied
+            # to a degenerate series.
+            if df[column].nunique(dropna=True) <= 1:
+                continue
+
+            features.append(column)
 
         return features
 
@@ -135,17 +148,17 @@ class FeatureQualityEngine:
         clean_series = series.dropna()
         if len(clean_series) < 4:
             return 0.0
-        
+
         q75 = clean_series.quantile(0.75)
         q25 = clean_series.quantile(0.25)
         iqr = q75 - q25
-        
+
         if iqr == 0:
             return 0.0
-        
+
         lower_bound = q25 - self.outlier_threshold * iqr
         upper_bound = q75 + self.outlier_threshold * iqr
-        
+
         outliers = clean_series[(clean_series < lower_bound) | (clean_series > upper_bound)]
         return float(len(outliers) / len(clean_series) * 100)
 
@@ -156,11 +169,11 @@ class FeatureQualityEngine:
         clean_series = series.dropna()
         if len(clean_series) < 2:
             return 0.0
-        
+
         hist, _ = np.histogram(clean_series, bins=n_bins)
         hist = hist + 1  # Add 1 to avoid log(0)
         entropy = stats.entropy(hist)
-        
+
         # Normalize entropy to [0, 1]
         max_entropy = np.log(n_bins)
         if max_entropy > 0:
@@ -268,7 +281,7 @@ class FeatureQualityEngine:
     def compute_quality_score(self, metrics: Dict[str, Any]) -> float:
         """
         Compute overall quality score using weighted components.
-        
+
         Weights:
           - Variance: 25% (feature has variation)
           - Missing: 20% (complete data)
@@ -310,7 +323,7 @@ class FeatureQualityEngine:
         """
         total = len(quality_table)
         scores = quality_table['quality_score']
-        
+
         stats_dict = {
             'total_features': total,
             'passed_count': len(passed_features),
@@ -331,7 +344,7 @@ class FeatureQualityEngine:
             'average_skew': float(quality_table['skewness'].mean()),
             'average_outliers': float(quality_table['outlier_pct'].mean())
         }
-        
+
         return stats_dict
 
     def compute(self, df: pd.DataFrame) -> FeatureQualityResult:
@@ -339,11 +352,11 @@ class FeatureQualityEngine:
         Main computation method.
         """
         print("\n  Computing Feature Quality...")
-        
+
         # Get features
         features = self.get_feature_columns(df)
         print(f"  Found {len(features)} features")
-        
+
         if not features:
             return FeatureQualityResult(
                 quality_table=pd.DataFrame(),
@@ -371,15 +384,15 @@ class FeatureQualityEngine:
                     'average_outliers': 0
                 }
             )
-        
+
         rows = []
         passed = []
         warning = []
         failed = []
-        
+
         for feature in features:
             series = df[feature]
-            
+
             # Compute metrics
             missing_pct = self.compute_missing_percentage(series)
             inf_count = self.compute_infinite_count(series)
@@ -389,7 +402,7 @@ class FeatureQualityEngine:
             kurtosis = self.compute_kurtosis(series)
             outlier_pct = self.compute_outlier_percentage(series)
             entropy = self.compute_entropy(series)
-            
+
             # Compute quality score
             metrics = {
                 'variance': variance,
@@ -401,7 +414,7 @@ class FeatureQualityEngine:
             }
             quality_score = self.compute_quality_score(metrics)
             decision = self.make_decision(quality_score)
-            
+
             # Track decisions
             if decision == "PASS":
                 passed.append(feature)
@@ -409,7 +422,7 @@ class FeatureQualityEngine:
                 warning.append(feature)
             else:
                 failed.append(feature)
-            
+
             rows.append({
                 'feature': feature,
                 'missing_pct': missing_pct,
@@ -423,20 +436,20 @@ class FeatureQualityEngine:
                 'quality_score': quality_score,
                 'decision': decision
             })
-        
+
         # Create quality table
         quality_table = pd.DataFrame(rows)
         quality_table = quality_table.sort_values('quality_score', ascending=False).reset_index(drop=True)
-        
+
         # Compute statistics
         stats = self.compute_statistics(quality_table, passed, warning, failed)
-        
+
         print(f"\n  Quality Results:")
         print(f"    PASS:   {len(passed)} features")
         print(f"    WARNING: {len(warning)} features")
         print(f"    FAIL:   {len(failed)} features")
         print(f"    Average Quality: {stats['average_quality']:.3f}")
-        
+
         return FeatureQualityResult(
             quality_table=quality_table,
             passed_features=passed,
