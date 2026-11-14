@@ -2,6 +2,12 @@
 Module 109 - Target Adapter
 
 Connects Module 108 breakout targets to Module 109's target column.
+
+Every attachment is gated on exact timestamp alignment between the
+source DataFrame and Module 108's target artifact. Row-count matching
+alone is insufficient — two datasets can share a row count but
+represent different timestamps, or share timestamps but with
+duplicates and gaps that break positional alignment downstream.
 """
 
 import pandas as pd
@@ -14,54 +20,121 @@ def attach_breakout_target(
     target_column: str = "future_breakout",
 ) -> pd.DataFrame:
     """
-    Attach a Module 108 breakout target to the Module 109 dataset.
-    
-    This establishes the dependency chain:
-        Module 108 features → breakout_{horizon} → target_adapter → future_breakout → Module 109 target
-    
-    The original breakout_{horizon} column remains excluded from predictor selection
-    via the engine's detect_features() and prepare_data() protections.
-    
+    Attach Module 108 breakout targets only after exact timestamp validation.
+
+    Establishes the dependency chain:
+
+        Module 108 features → breakout_{horizon} → target_adapter
+        → future_breakout → Module 109 target
+
+    The original breakout_{horizon} column remains excluded from
+    predictor selection via the engine's detect_features() and
+    prepare_data() protections. This adapter only attaches the
+    target; it does not expose it as a feature.
+
     Args:
-        df: Original DataFrame (with features)
-        breakout_targets: DataFrame from Module 108 with breakout_* columns
+        df: Original DataFrame (with features and timestamp)
+        breakout_targets: DataFrame from Module 108 with breakout_*
+            columns and timestamp
         horizon: Which horizon to use (e.g., 5 for breakout_5)
-        target_column: Name to give the target column in the output (default: "future_breakout")
-    
+        target_column: Name to give the target column in the output
+            (default: "future_breakout")
+
     Returns:
         DataFrame with the target column added
-    
+
     Raises:
-        ValueError: If the specified breakout target is not found or if data alignment fails
+        TypeError: If df or breakout_targets is not a DataFrame
+        ValueError: If the requested breakout target is missing, either
+            DataFrame lacks a timestamp column, row counts differ,
+            timestamps are invalid/duplicated, or the two timestamp
+            columns are not element-wise equal.
     """
+    if not isinstance(df, pd.DataFrame):
+        raise TypeError("df must be a pandas DataFrame")
+
+    if not isinstance(breakout_targets, pd.DataFrame):
+        raise TypeError("breakout_targets must be a pandas DataFrame")
+
     target_name = f"breakout_{horizon}"
-    
+
     if target_name not in breakout_targets.columns:
         raise ValueError(
-            f"Breakout target '{target_name}' not found. "
-            f"Available breakout targets: "
-            f"{[
-                c for c in breakout_targets.columns
-                if str(c).startswith('breakout_')
-            ]}"
+            f"Breakout target '{target_name}' not found."
         )
-    
+
+    # --------------------------------------------------------------
+    # Timestamp columns are mandatory.
+    # --------------------------------------------------------------
+    if "timestamp" not in df.columns:
+        raise ValueError("Source DataFrame has no timestamp column.")
+
+    if "timestamp" not in breakout_targets.columns:
+        raise ValueError("Module 108 targets have no timestamp column.")
+
     if len(df) != len(breakout_targets):
         raise ValueError(
-            "Data alignment failure: source DataFrame and Module 108 "
-            f"targets have different row counts "
-            f"({len(df)} != {len(breakout_targets)})"
+            "Data alignment failure: row counts differ "
+            f"({len(df)} != {len(breakout_targets)})."
         )
-    
-    result = df.copy()
-    
-    target = breakout_targets[target_name].copy()
-    
-    if len(target) != len(result):
+
+    # --------------------------------------------------------------
+    # Normalize timestamps without changing row order.
+    # --------------------------------------------------------------
+    source_ts = pd.to_datetime(
+        df["timestamp"], errors="coerce"
+    ).reset_index(drop=True)
+
+    target_ts = pd.to_datetime(
+        breakout_targets["timestamp"], errors="coerce"
+    ).reset_index(drop=True)
+
+    if source_ts.isna().any():
         raise ValueError(
-            f"Target alignment failure for '{target_name}'"
+            "Source timestamps contain invalid or missing values."
         )
-    
-    result[target_column] = target.to_numpy()
-    
+
+    if target_ts.isna().any():
+        raise ValueError(
+            "Target timestamps contain invalid or missing values."
+        )
+
+    if source_ts.duplicated().any():
+        raise ValueError("Source timestamps contain duplicates.")
+
+    if target_ts.duplicated().any():
+        raise ValueError("Target timestamps contain duplicates.")
+
+    # --------------------------------------------------------------
+    # Exact element-wise alignment.
+    #
+    # Row counts matched above, so `.equals()` compares values and
+    # order positionally. It also compares dtype — a timezone-aware
+    # source vs a naive target (or vice versa) fails here even when
+    # the wall-clock instants match. That is intentional: the
+    # downstream engine joins on positional index, and a tz mismatch
+    # would produce silently wrong feature-target pairings.
+    # --------------------------------------------------------------
+    if not source_ts.equals(target_ts):
+        raise ValueError(
+            "Timestamp alignment failure: source and target "
+            "timestamps do not match element-wise."
+        )
+
+    # --------------------------------------------------------------
+    # Attach the target.
+    #
+    # Only the target column is attached — not the raw timestamp —
+    # because df already owns the canonical timestamp. Attaching
+    # breakout_targets["timestamp"] here would create a duplicate
+    # timestamp column downstream.
+    # --------------------------------------------------------------
+    result = df.copy()
+
+    result[target_column] = (
+        breakout_targets[target_name]
+        .reset_index(drop=True)
+        .to_numpy()
+    )
+
     return result
