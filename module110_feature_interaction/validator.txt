@@ -141,7 +141,7 @@ def run_validation(result, statistics):
         print("\n  ✓ All validation checks passed")
         print("=" * 60)
         return True
-    except ValueError as e:
-        print(e)
+    except (ValueError, KeyError, TypeError) as e:
+        print(f"Validation error: {e}")
         print("=" * 60)
         return False
