@@ -1257,8 +1257,8 @@ class FeatureInteractionEngine:
             "n_bootstrap": self.n_bootstrap,
             "n_folds": self.n_folds,
             "top_stability": (
-                float(stability_scores.max())
-                if not stability_scores.empty
+                float(stability_scores.get(top_pair, 0.0))
+                if top_pair is not None
                 else 0.0
             ),
         }
