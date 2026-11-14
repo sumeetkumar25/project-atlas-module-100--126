@@ -19,6 +19,12 @@ Two-tier estimator configuration:
 
 FIXED: _bootstrap_iter builds X_boot from a NumPy array so bootstrap
        sampling cannot trigger pandas duplicate-label errors.
+
+FIXED: block_bootstrap()'s block_iteration() now uses the same
+       NumPy-based materialization. Block bootstrap with replacement
+       produces duplicate positional indices by design, and .iloc on
+       a frame with duplicate labels raises
+       "cannot reindex on an axis with duplicate labels".
 """
 
 import warnings
@@ -913,8 +919,21 @@ class MonteCarloValidationEngine:
                 dtype=int,
             )
 
-            X_block = X.iloc[indices].reset_index(
-                drop=True
+            # -----------------------------------------------------
+            # Materialize the block-bootstrap sample from a NumPy
+            # array, exactly as _bootstrap_iter does.
+            #
+            # Block bootstrap with replacement produces duplicate
+            # positional indices by design, and pandas .iloc on a
+            # frame with duplicate labels raises
+            # "cannot reindex on an axis with duplicate labels".
+            # Building the DataFrame from X.to_numpy(copy=False)
+            # avoids the pandas label machinery entirely while
+            # preserving dtype and column order.
+            # -----------------------------------------------------
+            X_block = pd.DataFrame(
+                X.to_numpy(copy=False)[indices],
+                columns=X.columns,
             )
 
             y_block = y[indices]
