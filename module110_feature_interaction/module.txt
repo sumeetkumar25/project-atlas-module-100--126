@@ -311,14 +311,75 @@ class FeatureInteractionResearch(BaseResearchModule):
         self.result.artifacts["interaction_matrix"] = self.result_data.interaction_matrix
         self.result.artifacts["stability_scores"] = self.result_data.stability_scores
         
-        # Generate and register reports
+        # Generate and register reports.
+        #
+        # validation_passed is forwarded from self.validation_passed
+        # (set by _validate in the previous pipeline step) so the
+        # report's Status line reflects the actual outcome.
         main_report = FeatureInteractionReport.generate(
             self.statistics,
             metadata=self.METADATA,
             dataset_name=self.result.dataset_identifier,
+            validation_passed=self.validation_passed,
         )
         self.result.artifacts["feature_interaction_report"] = main_report
         self.result.artifacts["matrix_report"] = self.matrix_report
+        
+        # ----------------------------------------------------------
+        # Machine-readable validation artifact.
+        #
+        # BaseResearchModule declares VALIDATION_TYPES = (bool, dict)
+        # and its _validate_artifacts() check rejects any other type
+        # for the "validation" key. A DataFrame assigned to
+        # artifacts["validation"] would raise:
+        #
+        #   validation must be bool or dict, got DataFrame
+        #
+        # at the _validate_artifacts() step of _execute_workflow() —
+        # AFTER _export_results() returns, aborting the entire run.
+        #
+        # To satisfy both the base framework contract AND the goal
+        # of a machine-readable status artifact, we:
+        #
+        #   1. Set artifacts["validation"] to a dict that carries
+        #      the real passed boolean plus structured errors and
+        #      warnings. This is what the base framework exports as
+        #      validation.json and what downstream consumers
+        #      expect to find at that key.
+        #
+        #   2. Set artifacts["validation_status"] to a one-row
+        #      DataFrame with validation_passed and a three-state
+        #      validation_status string. This is exported by the
+        #      base framework as validation_status.csv.
+        #
+        # Both artifacts describe the SAME outcome — they are two
+        # views of self.validation_passed, not redundant copies.
+        # ----------------------------------------------------------
+
+        # Derive a strict boolean from the tri-state self.validation_passed.
+        # None (validation not run) is treated as not-passed for the
+        # base framework boolean, but preserved as "NOT RUN" in the
+        # DataFrame artifact.
+        validation_passed_bool = (self.validation_passed is True)
+
+        if self.validation_passed is True:
+            validation_status_str = "PASSED"
+        elif self.validation_passed is False:
+            validation_status_str = "FAILED"
+        else:
+            validation_status_str = "NOT RUN"
+
+        self.result.artifacts["validation"] = {
+            "passed": validation_passed_bool,
+            "status": validation_status_str,
+            "errors": list(getattr(self.result, "errors", []) or []),
+            "warnings": list(getattr(self.result, "warnings", []) or []),
+        }
+
+        self.result.artifacts["validation_status"] = pd.DataFrame([{
+            "validation_passed": self.validation_passed,
+            "validation_status": validation_status_str,
+        }])
         
         # Store statistics as artifact
         stats_df = pd.DataFrame([self.result_data.statistics])
