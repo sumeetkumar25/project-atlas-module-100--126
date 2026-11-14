@@ -232,19 +232,57 @@ class BreakoutProbabilityResearch(
             np.asarray(states),
         )
 
+        # --------------------------------------------------------------
         # Canonical binary target for downstream predictive analysis.
+        #
         # +1 / -1 = breakout occurred; 0 = no breakout.
         # -99 = invalid or incomplete future observation.
-        if "breakout_10" not in features.columns:
+        #
+        # We prefer `breakout_10` because that is the historical
+        # downstream contract used by Module 109. If the caller
+        # configured a horizon set that excludes 10 (for example
+        # [1, 3, 5], which is what the Module 108 integration tests
+        # use), we fall back to the largest configured horizon so the
+        # module remains usable without forcing a specific horizon.
+        # --------------------------------------------------------------
+
+        available_horizons = [
+            int(column.removeprefix("breakout_"))
+            for column in features.columns
+            if column.startswith("breakout_")
+            and column.removeprefix("breakout_").isdigit()
+        ]
+
+        if not available_horizons:
             raise ValueError(
-                "Module 108 is missing required target breakout_10"
+                "Module 108 produced no breakout target columns."
+            )
+
+        # Prefer the canonical 10-bar target when available.
+        # Otherwise use the largest configured horizon.
+        canonical_horizon = (
+            10 if 10 in available_horizons else max(available_horizons)
+        )
+        canonical_column = f"breakout_{canonical_horizon}"
+
+        canonical_labels = pd.to_numeric(
+            features[canonical_column],
+            errors="coerce",
+        )
+
+        unexpected_labels = (
+            canonical_labels.notna()
+            & ~canonical_labels.isin([-99, -1, 0, 1])
+        )
+
+        if unexpected_labels.any():
+            raise ValueError(
+                f"{canonical_column} contains unsupported labels: "
+                f"{sorted(canonical_labels[unexpected_labels].unique())}"
             )
 
         features["future_breakout"] = (
-            pd.to_numeric(
-                features["breakout_10"],
-                errors="coerce",
-            )
+            canonical_labels
             .map({
                 1: 1.0,
                 -1: 1.0,
