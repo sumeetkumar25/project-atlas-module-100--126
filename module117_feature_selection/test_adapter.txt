@@ -1,35 +1,82 @@
+# atlas/modules/module117_feature_selection/test_adapter.py
+"""
+Module 117 - Feature Selection Dependency Adapter Test
+
+Validates the adapter that merges upstream artifacts from Modules
+109 (feature importance), 114 (temporal statistics), 115 (redundancy),
+and 116 (interaction) into a single per-feature selection table.
+
+FIXED: float equality checks now use np.isclose(...) so minor
+       floating-point representation drift during aggregation does
+       not flake the assertions. NumPy is imported for this purpose.
+"""
+
+import numpy as np
 import pandas as pd
-from atlas.modules.module117_feature_selection.adapter import FeatureSelectionDependencyAdapter
+
+from atlas.modules.module117_feature_selection.adapter import (
+    FeatureSelectionDependencyAdapter,
+)
 
 
 def test_module117_adapter():
     artifacts = {
-        "109": {"feature_importance": pd.DataFrame({
-            "feature": ["A", "B", "C"], "importance": [0.9, 0.6, 0.3]
-        })},
-        "114": {"temporal_statistics": pd.DataFrame({
-            "feature": ["A", "B", "C"],
-            "stability": [0.8, 0.7, 0.4],
-            "temporal_score": [80, 70, 40]
-        })},
-        "115": {"redundancy_table": pd.DataFrame({
-            "feature_a": ["A", "A", "B"],
-            "feature_b": ["B", "C", "C"],
-            "redundancy_score": [0.2, 0.4, 0.6]
-        })},
-        "116": {"interaction_table": pd.DataFrame({
-            "feature_a": ["A", "A", "B"],
-            "feature_b": ["B", "C", "C"],
-            "synergy_score": [0.3, 0.5, 0.7]
-        })}
+        "109": {
+            "feature_importance": pd.DataFrame({
+                "feature": ["A", "B", "C"],
+                "importance": [0.9, 0.6, 0.3],
+            })
+        },
+        "114": {
+            "temporal_statistics": pd.DataFrame({
+                "feature": ["A", "B", "C"],
+                "stability": [0.8, 0.7, 0.4],
+                "temporal_score": [80, 70, 40],
+            })
+        },
+        "115": {
+            "redundancy_table": pd.DataFrame({
+                "feature_a": ["A", "A", "B"],
+                "feature_b": ["B", "C", "C"],
+                "redundancy_score": [0.2, 0.4, 0.6],
+            })
+        },
+        "116": {
+            "interaction_table": pd.DataFrame({
+                "feature_a": ["A", "A", "B"],
+                "feature_b": ["B", "C", "C"],
+                "synergy_score": [0.3, 0.5, 0.7],
+            })
+        },
     }
 
     out = FeatureSelectionDependencyAdapter.build(artifacts)
 
     assert list(out.columns) == [
-        "feature", "importance", "stability", "redundancy", "interaction"
+        "feature",
+        "importance",
+        "stability",
+        "redundancy",
+        "interaction",
     ]
+
     assert set(out.feature) == {"A", "B", "C"}
-    assert out.loc[out.feature == "A", "redundancy"].iloc[0] == 0.3
-    assert out.loc[out.feature == "A", "interaction"].iloc[0] == 0.4
-    assert out.loc[out.feature == "A", "stability"].iloc[0] == 0.8
+
+    # --------------------------------------------------------------
+    # Float assertions use np.isclose to tolerate floating-point
+    # drift introduced by the adapter's merge/aggregation steps.
+    # --------------------------------------------------------------
+    assert np.isclose(
+        out.loc[out.feature == "A", "redundancy"].iloc[0],
+        0.3,
+    )
+
+    assert np.isclose(
+        out.loc[out.feature == "A", "interaction"].iloc[0],
+        0.4,
+    )
+
+    assert np.isclose(
+        out.loc[out.feature == "A", "stability"].iloc[0],
+        0.8,
+    )
