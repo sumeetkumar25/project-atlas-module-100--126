@@ -3,6 +3,9 @@
 Module 101 - Integration Test
 
 Tests feature validation engine, statistics, validator, report, and pipeline.
+
+FIXED: test_pipeline fixture now supplies the `trend_score` column required
+       by Module 101's dependency contract with Module 100.
 """
 
 import sys
@@ -172,6 +175,18 @@ def test_pipeline():
         "low": np.zeros(n),
         "volume": np.ones(n),
     })
+
+    # Module 101 requires the Module 100 `trend_score` dependency column.
+    # We synthesize it here from close prices (rolling mean of returns)
+    # so the fixture satisfies the dependency contract without touching
+    # production code and without introducing look-ahead.
+    df["trend_score"] = (
+        df["close"]
+        .pct_change()
+        .fillna(0.0)
+        .rolling(20, min_periods=1)
+        .mean()
+    )
 
     research = FeatureValidationResearch(horizon=10)
     result = research.run_dataframe(df, dataset_id="pipeline_test")
