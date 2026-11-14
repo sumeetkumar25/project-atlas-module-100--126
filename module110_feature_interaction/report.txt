@@ -94,34 +94,14 @@ class FeatureInteractionReport:
         lines.append("\n" + "-" * 45)
         lines.append("INTERPRETATION")
         lines.append("-" * 45)
-        
-        if statistics.top_score > 0.5:
-            lines.append("  Strongest interaction shows high predictive power")
-        elif statistics.top_score > 0.3:
-            lines.append("  Top interaction shows moderate predictive power")
-        else:
-            lines.append("  Top interaction shows weak predictive power")
-        
-        if statistics.top_stability > 0.8:
-            lines.append(f"  Top interaction is highly stable ({statistics.top_stability:.1%})")
-        elif statistics.top_stability > 0.5:
-            lines.append(f"  Top interaction has moderate stability ({statistics.top_stability:.1%})")
-        else:
-            lines.append(f"  Top interaction has low stability ({statistics.top_stability:.1%})")
-        
-        if statistics.interaction_entropy < 1.0:
-            lines.append("  Few interactions dominate")
-        elif statistics.interaction_entropy < 2.0:
-            lines.append("  Moderate spread of interactions")
-        else:
-            lines.append("  Interactions are widely spread")
-        
-        if statistics.method_agreement > 0.7:
-            lines.append("  Methods strongly agree on interaction rankings")
-        elif statistics.method_agreement > 0.4:
-            lines.append("  Methods moderately agree on interaction rankings")
-        else:
-            lines.append("  Methods show low agreement on interaction rankings")
+        lines.append(
+            "  Interaction scores represent relative rankings "
+            "among candidate feature pairs."
+        )
+        lines.append(
+            "  They do not establish out-of-sample predictive power "
+            "or trading profitability."
+        )
         
         # Validation — reflects the ACTUAL outcome, not a hardcoded claim.
         lines.append("\n" + "-" * 45)
