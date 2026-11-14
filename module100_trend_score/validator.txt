@@ -4,6 +4,9 @@ Module 100 - Trend Score Validator
 
 import numpy as np
 
+from dataclasses import asdict, is_dataclass
+from collections.abc import Mapping
+
 from .engine import TrendScoreResult
 from .statistics import TrendScoreStatistics
 
@@ -28,6 +31,25 @@ class TrendScoreValidator:
         Raises:
             ValueError: If validation fails
         """
+
+        # Normalize `statistics` to a Mapping regardless of how the
+        # caller supplied it:
+        #
+        #   1. Already a Mapping (dict, OrderedDict, ...) → use as-is.
+        #   2. A dataclass instance (e.g., TrendScoreStatistics) →
+        #      convert to its dict form via dataclasses.asdict().
+        #   3. Any other object with attributes → use vars() to read
+        #      its __dict__.
+        #
+        # This keeps the validator's downstream `statistics["..."]`
+        # access uniform across every caller convention, and prevents
+        # a TypeError: 'TrendScoreStatistics' object is not
+        # subscriptable from surfacing at the first key check.
+        if is_dataclass(statistics):
+            statistics = asdict(statistics)
+        elif not isinstance(statistics, Mapping):
+            statistics = vars(statistics)
+
         issues = []
 
         # Validate result object
