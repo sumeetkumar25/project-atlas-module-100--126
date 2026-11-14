@@ -55,15 +55,9 @@ def create_test_data(n=500, seed=42):
 
 def test_module108_target_adapter_integration():
     """
-    Regression test:
-
-    Module 108 breakout_5
-        ->
-    target adapter
-        ->
-    Module 110 future_breakout
+    Verify Module 108 target attachment through the real
+    BaseResearchModule dependency-injection workflow.
     """
-
     print("\n" + "=" * 60)
     print("TEST: Module 108 → Module 110 Target Integration")
     print("=" * 60)
@@ -72,21 +66,28 @@ def test_module108_target_adapter_integration():
 
     rng = np.random.default_rng(42)
 
-    features = pd.DataFrame({
+    timestamps = pd.date_range(
+        "2026-01-01",
+        periods=n,
+        freq="15min"
+    )
+
+    market_df = pd.DataFrame({
+        "timestamp": timestamps,
+        "open": rng.uniform(100, 110, n),
+        "high": rng.uniform(110, 120, n),
+        "low": rng.uniform(90, 100, n),
+        "close": rng.uniform(100, 110, n),
+        "volume": rng.uniform(1, 100, n),
         "feature1": rng.normal(size=n),
         "feature2": rng.normal(size=n),
         "feature3": rng.normal(size=n),
     })
 
     breakout_targets = pd.DataFrame({
-        "breakout_5": rng.choice(
-            [-1, 0, 1],
-            size=n
-        ),
-        "breakout_10": rng.choice(
-            [-1, 0, 1],
-            size=n
-        ),
+        "timestamp": timestamps,
+        "breakout_5": rng.choice([-1, 0, 1, -99], size=n),
+        "breakout_10": rng.choice([-1, 0, 1, -99], size=n),
     })
 
     research = FeatureInteractionResearch(
@@ -96,35 +97,68 @@ def test_module108_target_adapter_integration():
         n_folds=2,
     )
 
-    # Simulate the same dependency objects supplied by Atlas.
-    research.df = features
-    research.feature_df = breakout_targets
+    # ----------------------------------------------------------
+    # Exercise the real BaseResearchModule dependency workflow:
+    #
+    #   1. load_dataframe()         → populates market_df, calls
+    #                                 normalize_research_frame()
+    #   2. set_dependency_features() → validates dependency
+    #                                 timestamps, saves them to
+    #                                 _dependency_timestamps, drops
+    #                                 the timestamp column from
+    #                                 feature_df, merges into df
+    #   3. _prepare_data()          → reconstructs breakout_targets
+    #                                 from feature_df + _dependency_ts,
+    #                                 calls attach_breakout_target()
+    # ----------------------------------------------------------
+    research.load_dataframe(
+        market_df,
+        dataset_id="module110_adapter_test",
+    )
+
+    research.set_dependency_features(breakout_targets)
 
     prepared = research._prepare_data()
-
     prepared_df = prepared["df"]
 
-    assert "future_breakout" in prepared_df.columns
+    # ----------------------------------------------------------
+    # Assert: future_breakout is attached.
+    # ----------------------------------------------------------
+    assert "future_breakout" in prepared_df.columns, (
+        "Module 108 target was not attached as future_breakout"
+    )
 
+    # ----------------------------------------------------------
+    # Assert: attached values match breakout_5 exactly.
+    #
+    # The adapter copies breakout_{horizon} values verbatim
+    # (including -99 labels). Filtering of invalid labels happens
+    # later in engine.prepare_data(), not in the adapter.
+    # ----------------------------------------------------------
     assert np.array_equal(
         prepared_df["future_breakout"].to_numpy(),
-        breakout_targets["breakout_5"].to_numpy()
+        breakout_targets["breakout_5"].to_numpy(),
+    ), (
+        "future_breakout values do not match breakout_5"
     )
 
-    assert "breakout_5" not in (
-        research.engine.detect_features(
-            prepared_df
-        )
+    # ----------------------------------------------------------
+    # Assert: breakout_* columns are excluded from predictors.
+    #
+    # detect_features() must exclude future-derived Module 108
+    # targets to prevent target leakage into interaction analysis.
+    # ----------------------------------------------------------
+    detected = research.engine.detect_features(prepared_df)
+
+    assert "breakout_5" not in detected, (
+        "breakout_5 leaked into Module 110 predictors"
+    )
+    assert "breakout_10" not in detected, (
+        "breakout_10 leaked into Module 110 predictors"
     )
 
-    print(
-        "  ✓ Module 108 breakout_5 correctly "
-        "attached as future_breakout"
-    )
-
-    print(
-        "  ✓ breakout_5 excluded from predictors"
-    )
+    print("  ✓ Module 108 breakout_5 correctly attached as future_breakout")
+    print("  ✓ breakout_5 and breakout_10 excluded from predictors")
 
     return True
 
