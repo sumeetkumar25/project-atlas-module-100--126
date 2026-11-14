@@ -25,6 +25,13 @@ FIXED: block_bootstrap()'s block_iteration() now uses the same
        produces duplicate positional indices by design, and .iloc on
        a frame with duplicate labels raises
        "cannot reindex on an axis with duplicate labels".
+
+FIXED: sample_stability_test() now samples X via NumPy
+       (X.to_numpy(copy=False)) and rebuilds the DataFrame from
+       scratch. Directly calling resample(X, y, ...) on a DataFrame
+       lets pandas carry the sampled source row labels forward,
+       which can collide when the source frame already has duplicate
+       labels and trigger the same duplicate-label failure.
 """
 
 import warnings
@@ -1300,6 +1307,13 @@ class MonteCarloValidationEngine:
             5 if self.fast_mode else 20
         )
 
+        # ---------------------------------------------------------
+        # Materialize X as a NumPy array once so all resamples
+        # share the same backing buffer and none of the sampled
+        # frames inherit source row labels.
+        # ---------------------------------------------------------
+        X_values = X.to_numpy(copy=False)
+
         for size in sample_sizes:
 
             scores = []
@@ -1313,13 +1327,29 @@ class MonteCarloValidationEngine:
                     namespace=500
                 )
 
-                X_sample, y_sample = resample(
-                    X,
+                # -------------------------------------------------
+                # Sample X and y together via sklearn.utils.resample
+                # on the NumPy array, then rebuild a fresh DataFrame
+                # with a clean RangeIndex and the original column
+                # names.
+                #
+                # Sampling directly from the DataFrame lets pandas
+                # carry the sampled source row labels forward, and
+                # duplicate labels collide with the same
+                # "cannot reindex on an axis with duplicate labels"
+                # failure that has already been eliminated from
+                # _bootstrap_iter() and block_bootstrap().
+                # -------------------------------------------------
+                X_sample_values, y_sample = resample(
+                    X_values,
                     y,
-                    n_samples=int(
-                        len(X) * size
-                    ),
+                    n_samples=int(len(X) * size),
                     random_state=seed,
+                )
+
+                X_sample = pd.DataFrame(
+                    X_sample_values,
+                    columns=X.columns,
                 )
 
                 try:
