@@ -63,6 +63,26 @@ class FeatureInteractionValidator:
         ):
             issues.append("Top stability outside [0,1]")
         
+        # Verify top stability belongs to the highest-ranked pair.
+        top_pair = result.statistics.get("top_pair")
+        expected_top_stability = (
+            float(result.stability_scores.get(top_pair, 0.0))
+            if top_pair is not None
+            else 0.0
+        )
+        if not np.isclose(
+            statistics.top_stability,
+            expected_top_stability,
+            rtol=0,
+            atol=1e-12
+        ):
+            issues.append(
+                "Top stability does not match the stability "
+                f"of top pair '{top_pair}': "
+                f"reported={statistics.top_stability:.6f}, "
+                f"expected={expected_top_stability:.6f}"
+            )
+        
         # Check top interactions
         if result.top_interactions:
             for pair in result.top_interactions:
