@@ -46,18 +46,18 @@ class FeatureRepositoryResearch(BaseResearchModule):
     ):
         """
         Initialize the feature repository module.
-        
+
         Args:
             registry: Optional Atlas registry
             timestamp_column: Name of the timestamp column
             drop_duplicates: Whether to drop duplicate timestamps
-            fill_method: Method for filling missing values ('ffill', 'bfill', 'none')
+            fill_method: Method for filling missing values ('ffill', 'none')
         """
         super().__init__(
             module_name="Feature Repository",
             module_version=self.METADATA["version"],
         )
-        
+
         self.registry = registry or AtlasRegistry()
         self.engine = FeatureRepositoryEngine(
             timestamp_column=timestamp_column,
@@ -68,6 +68,7 @@ class FeatureRepositoryResearch(BaseResearchModule):
         self.result_data = None
         self.statistics = None
         self.feature_list_report = None
+        self.validation_passed = False
         self._output_dir = None
         self._feature_dict = None
         self._feature_store = None
@@ -80,7 +81,7 @@ class FeatureRepositoryResearch(BaseResearchModule):
             ("validate", self._validate),
             ("export", self._export_results),
         ]
-    
+
     def _prepare_data(self) -> Dict[str, Any]:
         """Prepare data from DataFrame."""
         # For this module, we expect a feature store path or dictionary
@@ -89,23 +90,37 @@ class FeatureRepositoryResearch(BaseResearchModule):
         elif self._feature_dict is not None:
             return {"feature_dict": self._feature_dict}
         else:
-            raise ValueError("No feature data provided. Use run_repository() with feature_store or feature_dict.")
-    
+            raise ValueError(
+                "No feature data provided. Use run_repository() with "
+                "feature_store or feature_dict."
+            )
+
     def _build_repository(self) -> Dict[str, Any]:
-        """Step 1: Build feature repository."""
+        """Build the feature repository with validated upstream inputs."""
         self.logger.info("Step 1: Building feature repository")
-        
+
         prepared = self._prepare_data()
-        
+
+        # Use a separate master directory for each module output.
+        # When output_dir is timeframe-specific, this prevents
+        # 15m, 1h and 4h matrices from overwriting each other.
+        master_dir = (
+            self._output_dir / "master"
+            if self._output_dir is not None
+            else None
+        )
+
         if "feature_store" in prepared:
             self.result_data = self.engine.compute(
-                feature_store=prepared["feature_store"]
+                feature_store=prepared["feature_store"],
+                master_dir=master_dir
             )
         else:
             self.result_data = self.engine.compute(
-                feature_dict=prepared["feature_dict"]
+                feature_dict=prepared["feature_dict"],
+                master_dir=master_dir
             )
-        
+
         self.logger.metric(
             "Total Rows",
             f"{self.result_data.summary_statistics['total_rows']:,}"
@@ -123,25 +138,25 @@ class FeatureRepositoryResearch(BaseResearchModule):
             f"{self.result_data.summary_statistics['memory_usage_mb']:.2f} MB"
         )
         self.logger.success("Feature repository built")
-        
+
         # Generate report
         self.feature_list_report = FeatureRepositoryReport.generate_feature_list(
             self.result_data.feature_metadata,
             top_n=20
         )
-        
+
         return {
             "total_rows": self.result_data.summary_statistics["total_rows"],
             "total_features": self.result_data.summary_statistics["total_features"],
             "missing_percentage": self.result_data.summary_statistics["missing_percentage"],
             "memory_usage_mb": self.result_data.summary_statistics["memory_usage_mb"]
         }
-    
+
     def _compute_statistics(self) -> Dict[str, Any]:
         """Step 2: Computing statistics."""
         self.logger.info("Step 2: Computing statistics")
         self.statistics = self.stats_engine.analyze(self.result_data)
-        
+
         self.logger.metric(
             "Feature Density",
             f"{self.statistics.feature_density:.2%}"
@@ -151,67 +166,86 @@ class FeatureRepositoryResearch(BaseResearchModule):
             f"{self.statistics.time_range_duration_days} days"
         )
         self.logger.success("Statistics computed")
-        
+
         return self.stats_engine.summary_dict(self.statistics)
-    
+
     def _validate(self) -> Dict[str, Any]:
-        """Step 3: Validation."""
+        """Validate repository and stop on failure."""
         self.logger.info("Step 3: Validation")
-        passed = run_validation(self.result_data, self.statistics)
+
+        passed = run_validation(
+            self.result_data,
+            self.statistics
+        )
+
+        if not passed:
+            self.validation_passed = False
+            raise RuntimeError(
+                "Module 126 validation failed. "
+                "Export has been stopped."
+            )
+
+        self.validation_passed = True
         self.logger.success("Validation complete")
-        return {"software_validation_passed": passed}
-    
+
+        return {
+            "software_validation_passed": True
+        }
+
     def _export_results(self) -> Dict[str, Any]:
         """Step 4: Export."""
         self.logger.info("Step 4: Export")
-        
+
         # Register DataFrames as artifacts
         self.result.artifacts["master_feature_matrix"] = self.result_data.master_feature_matrix
         self.result.artifacts["feature_metadata"] = self.result_data.feature_metadata
-        
+
         # Store summary
         summary_df = pd.DataFrame([self.result_data.summary_statistics])
         self.result.artifacts["repository_summary"] = summary_df
-        
+
         # Generate and register reports
         main_report = FeatureRepositoryReport.generate(
             self.statistics,
             metadata=self.METADATA,
             dataset_name=self.result.dataset_identifier,
+            validation_status=(
+                "PASSED" if self.validation_passed else "NOT RUN"
+            )
         )
         self.result.artifacts["feature_repository_report"] = main_report
         self.result.artifacts["feature_list_report"] = self.feature_list_report
-        
+
         # Export to files
         if self._output_dir is not None:
             export_dir = self._output_dir / "exports"
             export_dir.mkdir(parents=True, exist_ok=True)
-            
+
             FeatureRepositoryExporter.export_master_matrix(
                 self.result_data.master_feature_matrix,
                 export_dir / "master_feature_matrix.csv"
             )
-            
+
             FeatureRepositoryExporter.export_metadata(
                 self.result_data.feature_metadata,
                 export_dir / "feature_metadata.csv"
             )
-            
+
             FeatureRepositoryExporter.export_summary(
                 self.result_data.summary_statistics,
                 export_dir / "repository_summary.csv"
             )
-        
+
         self.logger.metric("Artifacts", str(len(self.result.artifacts)))
         self.logger.success("Export complete")
-        
+
         return {
             "export_status": "complete",
             "artifact_count": len(self.result.artifacts),
             "total_features": self.result_data.summary_statistics["total_features"],
             "total_rows": self.result_data.summary_statistics["total_rows"]
         }
-    
+
     def compute(self) -> Dict[str, Any]:
         """Run the full computation pipeline."""
         self.logger.section("Feature Repository Pipeline")
@@ -219,17 +253,17 @@ class FeatureRepositoryResearch(BaseResearchModule):
         self.result.status = "completed"
         self.logger.success("Module 126 complete")
         return results
-    
+
     def run(self, filepath: str, output_dir=None):
         """Run module on file."""
         self._output_dir = Path(output_dir) if output_dir else None
         return super().run(filepath, output_dir)
-    
+
     def run_dataframe(self, df, dataset_id="in_memory", output_dir=None):
         """Run module on a single DataFrame."""
         self._output_dir = Path(output_dir) if output_dir else None
         return super().run_dataframe(df, dataset_id, output_dir)
-    
+
     def run_repository(
         self,
         feature_store: Optional[Path] = None,
@@ -239,7 +273,7 @@ class FeatureRepositoryResearch(BaseResearchModule):
     ) -> Any:
         """
         Run the repository on a feature store or dictionary.
-        
+
         Args:
             feature_store: Path to the feature store directory
             feature_dict: Dictionary mapping feature name to DataFrame
@@ -249,14 +283,14 @@ class FeatureRepositoryResearch(BaseResearchModule):
         self._feature_store = feature_store
         self._feature_dict = feature_dict
         self._output_dir = Path(output_dir) if output_dir else None
-        
+
         # Create a dummy DataFrame to satisfy BaseResearchModule
         dummy = pd.DataFrame(
             {
                 "timestamp": [pd.Timestamp("2000-01-01")]
             }
         )
-        
+
         # Let BaseResearchModule.run_dataframe() initialize everything
         return super().run_dataframe(
             dummy,
