@@ -9,18 +9,23 @@ import pandas as pd
 
 class FeatureRepositoryReport:
     """Report generator for feature repository results."""
-    
+
     @staticmethod
-    def generate(statistics, metadata=None, dataset_name="Unknown") -> str:
+    def generate(
+        statistics,
+        metadata=None,
+        dataset_name="Unknown",
+        validation_status="NOT RUN"
+    ) -> str:
         """Generate a formatted report."""
         lines = []
-        
+
         lines.append("=" * 55)
         lines.append("MODULE 126")
         lines.append("FEATURE REPOSITORY")
         lines.append("=" * 55)
         lines.append(f"\nDataset: {dataset_name}")
-        
+
         # Overview
         lines.append("\n" + "-" * 45)
         lines.append("OVERVIEW")
@@ -28,7 +33,7 @@ class FeatureRepositoryReport:
         lines.append(f"  Total Rows: {statistics.total_rows:,}")
         lines.append(f"  Total Features: {statistics.total_features}")
         lines.append(f"  Total Columns: {statistics.total_columns}")
-        
+
         # Data Quality
         lines.append("\n" + "-" * 45)
         lines.append("DATA QUALITY")
@@ -36,7 +41,7 @@ class FeatureRepositoryReport:
         lines.append(f"  Missing Values: {statistics.missing_percentage:.2f}%")
         lines.append(f"  Feature Density: {statistics.feature_density:.2%}")
         lines.append(f"  Constant Features: {statistics.constant_features}")
-        
+
         # Time Range
         lines.append("\n" + "-" * 45)
         lines.append("TIME RANGE")
@@ -44,28 +49,30 @@ class FeatureRepositoryReport:
         lines.append(f"  Start: {statistics.time_range_start}")
         lines.append(f"  End: {statistics.time_range_end}")
         lines.append(f"  Duration: {statistics.time_range_duration_days} days")
-        
+
         # Performance
         lines.append("\n" + "-" * 45)
         lines.append("PERFORMANCE")
         lines.append("-" * 45)
         lines.append(f"  Memory Usage: {statistics.memory_usage_mb:.2f} MB")
         lines.append(f"  Fill Method: {statistics.fill_method}")
-        
+
         # Validation
         lines.append("\n" + "-" * 45)
         lines.append("VALIDATION")
         lines.append("-" * 45)
-        lines.append("  Status: PASSED")
-        
+        lines.append(
+            f"  Status: {validation_status}"
+        )
+
         # Footer
         lines.append(f"\n  Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         lines.append("\n" + "=" * 55)
         lines.append("END OF REPORT")
         lines.append("=" * 55)
-        
+
         return "\n".join(lines)
-    
+
     @staticmethod
     def generate_feature_list(metadata: pd.DataFrame, top_n: int = 20) -> str:
         """Generate a feature list report."""
@@ -73,15 +80,15 @@ class FeatureRepositoryReport:
         lines.append("\n" + "=" * 60)
         lines.append(f"FEATURE LIST (Top {top_n})")
         lines.append("=" * 60)
-        
+
         # Sort by null percentage
         sorted_metadata = metadata.sort_values('null_percentage')
-        
+
         lines.append(
             f"\n{'Feature':<25} {'Type':<12} {'Null %':<10} {'Unique':<10}"
         )
         lines.append("-" * 60)
-        
+
         for _, row in sorted_metadata.head(top_n).iterrows():
             lines.append(
                 f"{row['feature'][:24]:<25} "
@@ -89,10 +96,10 @@ class FeatureRepositoryReport:
                 f"{row['null_percentage']:<10.2f} "
                 f"{row['unique_values']:<10}"
             )
-        
+
         lines.append("\n" + "=" * 60)
         return "\n".join(lines)
-    
+
     @staticmethod
     def save(report: str, filepath: str):
         """Save report to file."""
