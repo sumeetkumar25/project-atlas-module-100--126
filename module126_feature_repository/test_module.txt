@@ -22,16 +22,21 @@ from atlas.modules.module126_feature_repository.module import FeatureRepositoryR
 def create_test_features(n=100, seed=42):
     """Create synthetic test features."""
     np.random.seed(seed)
-    
+
     # Create timestamps
     timestamps = pd.date_range('2020-01-01', periods=n, freq='1h')
-    
+
     # Feature 1: Trend score
+    # Includes the two rolling features mandated by Modules 035 and 037.
     trend_df = pd.DataFrame({
         'timestamp': timestamps,
-        'trend_score': np.random.randn(n) * 10 + 50
+        'trend_score': np.random.randn(n) * 10 + 50,
+        'hurst_exponent_rolling_60d':
+            np.random.uniform(0.35, 0.75, n),
+        'normalized_entropy_rolling_60d':
+            np.random.uniform(0.2, 0.9, n)
     })
-    
+
     # Feature 2: Compression score (with some missing)
     compression = np.random.randn(n) * 10 + 50
     compression[:10] = np.nan  # Introduce some missing values
@@ -39,25 +44,25 @@ def create_test_features(n=100, seed=42):
         'timestamp': timestamps[5:],  # Different timestamp alignment
         'compression_score': compression[5:]
     })
-    
+
     # Feature 3: Momentum score
     momentum_df = pd.DataFrame({
         'timestamp': timestamps,
         'momentum_score': np.random.randn(n) * 5 + 50
     })
-    
+
     # Feature 4: Liquidity score (constant feature)
     liquidity_df = pd.DataFrame({
         'timestamp': timestamps,
         'liquidity_score': np.ones(n) * 5
     })
-    
+
     # Feature 5: Volume score (duplicate timestamp test)
     volume_df = pd.DataFrame({
         'timestamp': timestamps[:90],
         'volume_score': np.random.randn(90) * 100 + 1000
     })
-    
+
     return {
         'trend': trend_df,
         'compression': compression_df,
@@ -72,21 +77,114 @@ def test_engine_feature_loading():
     print("\n" + "=" * 60)
     print("TEST 1: Feature Loading and Merging")
     print("=" * 60)
-    
+
     feature_dict = create_test_features()
     engine = FeatureRepositoryEngine()
-    
+
     master_df = engine.load_features(feature_dict)
-    
+
     assert not master_df.empty
     assert 'timestamp' in master_df.columns
     assert 'trend_score' in master_df.columns
     assert 'compression_score' in master_df.columns
     assert 'momentum_score' in master_df.columns
     assert 'liquidity_score' in master_df.columns
-    
+
     print(f"  Master shape: {master_df.shape}")
     print("  ✓ Feature loading test passed")
+    return True
+
+
+def test_required_upstream_features():
+    """Test: Required upstream features from Modules 035 and 037."""
+    print("\n" + "=" * 60)
+    print("TEST: Required Upstream Features")
+    print("=" * 60)
+
+    feature_dict = create_test_features()
+    engine = FeatureRepositoryEngine()
+
+    result = engine.load_features(feature_dict)
+
+    required = engine.REQUIRED_FEATURES
+    assert required.issubset(set(result.columns))
+    print("  Both required rolling features are present")
+
+    # Verify that a missing upstream feature is rejected.
+    broken_dict = {
+        key: value.copy()
+        for key, value in feature_dict.items()
+    }
+    broken_dict["trend"] = broken_dict["trend"].drop(
+        columns=["hurst_exponent_rolling_60d"]
+    )
+
+    try:
+        engine.load_features(broken_dict)
+    except ValueError as e:
+        assert "hurst_exponent_rolling_60d" in str(e)
+        print("  Missing upstream feature correctly rejected")
+    else:
+        raise AssertionError(
+            "Expected ValueError when hurst_exponent_rolling_60d is missing"
+        )
+
+    return True
+
+
+def test_causal_missing_value_handling():
+    """Test: Causal missing-value handling."""
+    print("\n" + "=" * 60)
+    print("TEST: Causal Missing Value Handling")
+    print("=" * 60)
+
+    engine = FeatureRepositoryEngine(
+        fill_method="ffill"
+    )
+
+    df = pd.DataFrame({
+        "timestamp": pd.date_range(
+            "2024-01-01",
+            periods=5,
+            freq="1h"
+        ),
+        "test_feature": [
+            np.nan,
+            np.nan,
+            10.0,
+            20.0,
+            30.0
+        ]
+    })
+
+    result = engine.handle_missing_values(df)
+
+    # Leading missing observations must remain missing.
+    assert pd.isna(result.loc[0, "test_feature"])
+    assert pd.isna(result.loc[1, "test_feature"])
+    assert result.loc[2, "test_feature"] == 10.0
+    assert result.loc[3, "test_feature"] == 20.0
+    assert result.loc[4, "test_feature"] == 30.0
+    print("  Leading NaN preserved; forward fill did not back-propagate")
+
+    # Backward fill must be rejected.
+    engine_bfill = FeatureRepositoryEngine(
+        fill_method="bfill"
+    )
+    try:
+        engine_bfill.handle_missing_values(df)
+    except ValueError as e:
+        msg = str(e)
+        assert (
+            "Backward fill" in msg
+            or "future information" in msg
+        )
+        print("  Backward fill correctly rejected")
+    else:
+        raise AssertionError(
+            "Expected ValueError when fill_method='bfill'"
+        )
+
     return True
 
 
@@ -95,19 +193,19 @@ def test_engine_timestamp_alignment():
     print("\n" + "=" * 60)
     print("TEST 2: Timestamp Alignment")
     print("=" * 60)
-    
+
     feature_dict = create_test_features()
     engine = FeatureRepositoryEngine()
-    
+
     master_df = engine.load_features(feature_dict)
     master_df = engine.align_timestamps(master_df)
-    
+
     # Check sorted
     assert master_df['timestamp'].is_monotonic_increasing
-    
+
     # Check timestamps are datetime
     assert pd.api.types.is_datetime64_any_dtype(master_df['timestamp'])
-    
+
     print("  ✓ Timestamp alignment test passed")
     return True
 
@@ -117,24 +215,24 @@ def test_engine_metadata():
     print("\n" + "=" * 60)
     print("TEST 3: Metadata Generation")
     print("=" * 60)
-    
+
     feature_dict = create_test_features()
     engine = FeatureRepositoryEngine()
-    
+
     master_df = engine.load_features(feature_dict)
     master_df = engine.align_timestamps(master_df)
     metadata = engine.build_metadata(master_df)
-    
+
     assert not metadata.empty
     assert 'feature' in metadata.columns
     assert 'null_percentage' in metadata.columns
     assert 'unique_values' in metadata.columns
-    
+
     # Should identify liquidity_score as constant
     liquidity_row = metadata[metadata['feature'] == 'liquidity_score']
     if not liquidity_row.empty:
         assert liquidity_row['unique_values'].iloc[0] == 1
-    
+
     print(f"  Metadata shape: {metadata.shape}")
     print("  ✓ Metadata test passed")
     return True
@@ -145,22 +243,22 @@ def test_engine_statistics():
     print("\n" + "=" * 60)
     print("TEST 4: Statistics Computation")
     print("=" * 60)
-    
+
     feature_dict = create_test_features()
     engine = FeatureRepositoryEngine(fill_method='ffill')
-    
+
     master_df = engine.load_features(feature_dict)
     master_df = engine.align_timestamps(master_df)
     master_df = engine.handle_missing_values(master_df)
     metadata = engine.build_metadata(master_df)
     stats = engine.compute_statistics(master_df, metadata)
-    
+
     assert stats['total_rows'] > 0
     assert stats['total_features'] > 0
     assert stats['memory_usage_mb'] > 0
     assert 0 <= stats['feature_density'] <= 1
     assert 0 <= stats['missing_percentage'] <= 100
-    
+
     print(f"  Total rows: {stats['total_rows']}")
     print(f"  Total features: {stats['total_features']}")
     print(f"  Missing %: {stats['missing_percentage']:.2f}%")
@@ -173,24 +271,24 @@ def test_engine_fill_methods():
     print("\n" + "=" * 60)
     print("TEST 5: Fill Methods")
     print("=" * 60)
-    
+
     feature_dict = create_test_features()
-    
+
     # Test forward fill
     engine_ffill = FeatureRepositoryEngine(fill_method='ffill')
     master_ffill = engine_ffill.load_features(feature_dict)
     master_ffill = engine_ffill.align_timestamps(master_ffill)
     master_ffill = engine_ffill.handle_missing_values(master_ffill)
-    
+
     # Test no fill
     engine_none = FeatureRepositoryEngine(fill_method='none')
     master_none = engine_none.load_features(feature_dict)
     master_none = engine_none.align_timestamps(master_none)
     master_none = engine_none.handle_missing_values(master_none)
-    
+
     # Forward fill should have fewer NaN values
     assert master_ffill.isna().sum().sum() <= master_none.isna().sum().sum()
-    
+
     print(f"  Ffill NaN count: {master_ffill.isna().sum().sum()}")
     print(f"  None NaN count: {master_none.isna().sum().sum()}")
     print("  ✓ Fill methods test passed")
@@ -202,17 +300,17 @@ def test_engine_compute():
     print("\n" + "=" * 60)
     print("TEST 6: Full Engine Computation")
     print("=" * 60)
-    
+
     feature_dict = create_test_features()
     engine = FeatureRepositoryEngine()
-    
+
     result = engine.compute(feature_dict=feature_dict)
-    
+
     assert not result.master_feature_matrix.empty
     assert not result.feature_metadata.empty
     assert result.summary_statistics['total_features'] > 0
     assert result.summary_statistics['total_rows'] > 0
-    
+
     print(f"  Total rows: {result.summary_statistics['total_rows']}")
     print(f"  Total features: {result.summary_statistics['total_features']}")
     print("  ✓ Full engine test passed")
@@ -224,18 +322,18 @@ def test_statistics():
     print("\n" + "=" * 60)
     print("TEST 7: Statistics Engine")
     print("=" * 60)
-    
+
     feature_dict = create_test_features()
     engine = FeatureRepositoryEngine()
     stats_engine = FeatureRepositoryStatisticsEngine()
-    
+
     result = engine.compute(feature_dict=feature_dict)
     stats = stats_engine.analyze(result)
-    
+
     assert stats.total_features == result.summary_statistics['total_features']
     assert stats.total_rows == result.summary_statistics['total_rows']
     assert stats.feature_density == result.summary_statistics['feature_density']
-    
+
     print(f"  Total features: {stats.total_features}")
     print(f"  Total rows: {stats.total_rows}")
     print("  ✓ Statistics test passed")
@@ -247,17 +345,17 @@ def test_validator():
     print("\n" + "=" * 60)
     print("TEST 8: Validator")
     print("=" * 60)
-    
+
     feature_dict = create_test_features()
     engine = FeatureRepositoryEngine()
     stats_engine = FeatureRepositoryStatisticsEngine()
-    
+
     result = engine.compute(feature_dict=feature_dict)
     stats = stats_engine.analyze(result)
-    
+
     passed = run_validation(result, stats)
     assert passed
-    
+
     print("  ✓ Validator test passed")
     return True
 
@@ -267,16 +365,16 @@ def test_pipeline():
     print("\n" + "=" * 60)
     print("TEST 9: Full Pipeline")
     print("=" * 60)
-    
+
     feature_dict = create_test_features()
-    
+
     research = FeatureRepositoryResearch()
-    
+
     result = research.run_repository(
         feature_dict=feature_dict,
         dataset_id="pipeline_test"
     )
-    
+
     assert result.status == "completed"
     assert "master_feature_matrix" in result.artifacts
     assert "feature_metadata" in result.artifacts
@@ -284,7 +382,7 @@ def test_pipeline():
     assert "feature_repository_report" in result.artifacts
     assert "feature_list_report" in result.artifacts
     assert result.statistics.get("software_validation_passed") == True
-    
+
     print(f"  Total features: {result.statistics.get('total_features')}")
     print(f"  Total rows: {result.statistics.get('total_rows')}")
     print("  ✓ Full pipeline test passed")
@@ -297,10 +395,16 @@ def main():
     print("PROJECT ATLAS - MODULE 126 INTEGRATION TEST")
     print("Feature Repository")
     print("=" * 70)
-    
+
     results = {}
-    
+
     results["feature_loading"] = test_engine_feature_loading()
+    results["required_upstream_features"] = (
+        test_required_upstream_features()
+    )
+    results["causal_missing_values"] = (
+        test_causal_missing_value_handling()
+    )
     results["timestamp_alignment"] = test_engine_timestamp_alignment()
     results["metadata"] = test_engine_metadata()
     results["statistics"] = test_engine_statistics()
@@ -309,19 +413,19 @@ def main():
     results["statistics_engine"] = test_statistics()
     results["validator"] = test_validator()
     results["pipeline"] = test_pipeline()
-    
+
     print("\n" + "=" * 70)
     print("RESULTS")
     print("=" * 70)
-    
+
     for name, ok in results.items():
         print(f"  {'✓' if ok else '✗'} {name}")
-    
+
     passed = sum(results.values())
     total = len(results)
-    
+
     print(f"\n  {passed}/{total} tests passed")
-    
+
     if passed == total:
         print("\n✓ Module 126 VALIDATED")
         return 0
