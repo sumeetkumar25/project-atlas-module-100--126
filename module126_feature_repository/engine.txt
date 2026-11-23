@@ -39,6 +39,12 @@ class FeatureRepositoryEngine:
     # Required columns for validation
     REQUIRED_COLS = {'timestamp'}
 
+    # Mandatory features from upstream Modules 035 and 037.
+    REQUIRED_FEATURES = {
+        "hurst_exponent_rolling_60d",
+        "normalized_entropy_rolling_60d",
+    }
+
     # Columns to exclude from feature counting
     IGNORE_COLS = {'timestamp', 'date', 'time', 'index'}
 
@@ -50,11 +56,11 @@ class FeatureRepositoryEngine:
     ):
         """
         Initialize the feature repository engine.
-        
+
         Args:
             timestamp_column: Name of the timestamp column
             drop_duplicates: Whether to drop duplicate timestamps
-            fill_method: Method for filling missing values ('ffill', 'bfill', 'none')
+            fill_method: Method for filling missing values ('ffill', 'none')
         """
         self.timestamp_column = timestamp_column
         self.drop_duplicates = drop_duplicates
@@ -63,45 +69,45 @@ class FeatureRepositoryEngine:
     def discover_feature_files(self, feature_store: Path) -> List[Path]:
         """
         Automatically discover every feature file.
-        
+
         Args:
             feature_store: Path to the feature store directory
-            
+
         Returns:
             List of feature file paths
         """
         if not feature_store.exists():
             raise FileNotFoundError(f"Feature store not found: {feature_store}")
-        
+
         # Search for parquet files
         files = sorted(feature_store.glob("*.parquet"))
-        
+
         # Also search for CSV files (backward compatibility)
         csv_files = sorted(feature_store.glob("*.csv"))
         files.extend(csv_files)
-        
+
         if not files:
             raise FileNotFoundError(
                 f"No feature files found in {feature_store}. "
                 f"Expected .parquet or .csv files."
             )
-        
+
         return files
 
     def load_feature_store(self, feature_store: Path) -> Dict[str, pd.DataFrame]:
         """
         Load every discovered feature from the feature store.
-        
+
         Args:
             feature_store: Path to the feature store directory
-            
+
         Returns:
             Dictionary mapping feature name to DataFrame
         """
         files = self.discover_feature_files(feature_store)
-        
+
         feature_dict = {}
-        
+
         for file in files:
             # Determine file type and load
             if file.suffix == '.parquet':
@@ -113,47 +119,109 @@ class FeatureRepositoryEngine:
                     df[self.timestamp_column] = pd.to_datetime(df[self.timestamp_column])
             else:
                 continue
-            
+
             feature_dict[file.stem] = df
-        
+
         print(f"  Loaded {len(feature_dict)} feature files from {feature_store}")
         return feature_dict
 
-    def load_features(self, feature_dict: Dict[str, pd.DataFrame]) -> pd.DataFrame:
+    def load_features(
+        self,
+        feature_dict: Dict[str, pd.DataFrame]
+    ) -> pd.DataFrame:
         """
-        Load and merge multiple feature DataFrames.
-        
-        Args:
-            feature_dict: Dictionary mapping feature name to DataFrame
-            
-        Returns:
-            Merged master feature matrix
+        Merge upstream feature DataFrames using validated one-to-one
+        timestamp alignment.
+
+        Preserves every feature column and rejects missing required
+        upstream features, duplicate timestamps and column collisions.
         """
         if not feature_dict:
             raise ValueError("Feature dictionary is empty")
-        
-        # Start with first DataFrame
-        first_key = list(feature_dict.keys())[0]
-        master_df = feature_dict[first_key].copy()
-        
-        # Merge remaining DataFrames
-        for key, df in list(feature_dict.items())[1:]:
-            # Ensure timestamp column exists
+
+        master_df = None
+        source_schemas = {}
+
+        for key, source_df in feature_dict.items():
+            if not isinstance(source_df, pd.DataFrame):
+                raise TypeError(
+                    f"Feature source '{key}' is not a pandas DataFrame"
+                )
+
+            if source_df.empty:
+                raise ValueError(
+                    f"Feature source '{key}' is empty"
+                )
+
+            df = source_df.copy()
+
+            # Validate timestamp.
             if self.timestamp_column not in df.columns:
-                raise ValueError(f"DataFrame '{key}' missing timestamp column")
-            
-            # Convert timestamp to datetime if needed
+                raise ValueError(
+                    f"Feature source '{key}' is missing "
+                    f"the timestamp column '{self.timestamp_column}'. "
+                    f"Received columns: {list(df.columns)}"
+                )
+
+            # Normalize timestamp dtype.
             if not pd.api.types.is_datetime64_any_dtype(df[self.timestamp_column]):
                 df[self.timestamp_column] = pd.to_datetime(df[self.timestamp_column])
-            
-            # Merge on timestamp
-            master_df = pd.merge(
-                master_df,
-                df,
-                on=self.timestamp_column,
-                how='outer'
+
+            # Reject duplicate timestamps within a single source.
+            if df[self.timestamp_column].duplicated().any():
+                dup_mask = df[self.timestamp_column].duplicated(keep=False)
+                raise ValueError(
+                    f"Feature source '{key}' contains duplicate timestamps "
+                    f"({int(dup_mask.sum())} offending rows). Each upstream "
+                    f"module must provide exactly one observation per timestamp."
+                )
+
+            # Deterministic ordering.
+            df = df.sort_values(self.timestamp_column).reset_index(drop=True)
+
+            # Record schema for diagnostics.
+            source_schemas[key] = set(df.columns)
+
+            # Merge into master.
+            if master_df is None:
+                master_df = df
+            else:
+                # Reject column collisions (timestamp excluded).
+                overlapping = (
+                    set(df.columns) - {self.timestamp_column}
+                ) & (
+                    set(master_df.columns) - {self.timestamp_column}
+                )
+                if overlapping:
+                    raise ValueError(
+                        f"Column collision detected when merging '{key}': "
+                        f"{sorted(overlapping)}. Feature column names must "
+                        f"be globally unique across upstream sources."
+                    )
+
+                master_df = pd.merge(
+                    master_df,
+                    df,
+                    on=self.timestamp_column,
+                    how="outer",
+                    validate="one_to_one",
+                )
+
+        # Final validation: required upstream features must be present.
+        all_columns = set(master_df.columns)
+        missing_required = self.REQUIRED_FEATURES - all_columns
+        if missing_required:
+            received_summary = {
+                key: sorted(cols - {self.timestamp_column})
+                for key, cols in source_schemas.items()
+            }
+            raise ValueError(
+                "Missing required upstream features: "
+                f"{sorted(missing_required)}. "
+                f"Received columns by source: {received_summary}. "
+                "Ensure Modules 035 and 037 are executed before Module 126."
             )
-        
+
         return master_df
 
     def align_timestamps(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -163,37 +231,49 @@ class FeatureRepositoryEngine:
         # Ensure timestamp is datetime
         if not pd.api.types.is_datetime64_any_dtype(df[self.timestamp_column]):
             df[self.timestamp_column] = pd.to_datetime(df[self.timestamp_column])
-        
+
         # Sort by timestamp
         df = df.sort_values(self.timestamp_column).reset_index(drop=True)
-        
+
         # Remove duplicate timestamps if requested
         if self.drop_duplicates:
             df = df.drop_duplicates(subset=[self.timestamp_column], keep='first')
-        
+
         return df
 
-    def handle_missing_values(self, df: pd.DataFrame) -> pd.DataFrame:
+    def handle_missing_values(
+        self,
+        df: pd.DataFrame
+    ) -> pd.DataFrame:
         """
-        Handle missing values in the feature matrix.
-        Compatible with Pandas 2.x and 3.x.
+        Apply causal missing-value handling.
+
+        Forward fill is permitted.
+        Backward fill is prohibited because it can introduce
+        future information into earlier observations.
         """
+        df = df.copy()
+
         if self.fill_method == "ffill":
-            df = df.ffill()
-            df = df.bfill()
-        
-        elif self.fill_method == "bfill":
-            df = df.bfill()
-            df = df.ffill()
-        
+            feature_columns = self.get_feature_columns(df)
+            df.loc[:, feature_columns] = (
+                df.loc[:, feature_columns].ffill()
+            )
+
         elif self.fill_method == "none":
             pass
-        
+
+        elif self.fill_method == "bfill":
+            raise ValueError(
+                "Backward fill is disabled in Project Atlas. "
+                "It introduces future information into earlier observations."
+            )
+
         else:
             raise ValueError(
                 f"Unknown fill method: {self.fill_method}"
             )
-        
+
         return df
 
     def get_feature_columns(self, df: pd.DataFrame) -> List[str]:
@@ -212,7 +292,7 @@ class FeatureRepositoryEngine:
         Build feature metadata table.
         """
         features = self.get_feature_columns(df)
-        
+
         metadata_rows = []
         for feature in features:
             metadata_rows.append({
@@ -227,7 +307,7 @@ class FeatureRepositoryEngine:
                 'mean_value': df[feature].mean() if pd.api.types.is_numeric_dtype(df[feature]) else None,
                 'std_value': df[feature].std() if pd.api.types.is_numeric_dtype(df[feature]) else None
             })
-        
+
         return pd.DataFrame(metadata_rows)
 
     def compute_statistics(
@@ -239,13 +319,13 @@ class FeatureRepositoryEngine:
         Compute summary statistics.
         """
         features = self.get_feature_columns(df)
-        
+
         # Memory usage
         memory_usage = df.memory_usage(deep=True).sum() / (1024 * 1024)  # MB
-        
+
         # Feature density
         feature_density = 1 - (metadata['null_percentage'].mean() / 100)
-        
+
         # Time range
         time_range = None
         if self.timestamp_column in df.columns:
@@ -254,7 +334,7 @@ class FeatureRepositoryEngine:
                 'end': df[self.timestamp_column].max(),
                 'duration_days': (df[self.timestamp_column].max() - df[self.timestamp_column].min()).days
             }
-        
+
         stats = {
             'total_rows': len(df),
             'total_features': len(features),
@@ -267,43 +347,55 @@ class FeatureRepositoryEngine:
             'time_range': time_range,
             'fill_method': self.fill_method
         }
-        
+
         return stats
 
-    def save_master_matrix(self, df: pd.DataFrame, metadata: pd.DataFrame) -> None:
+    def save_master_matrix(
+        self,
+        df: pd.DataFrame,
+        metadata: pd.DataFrame,
+        master_dir: Optional[Path] = None
+    ) -> None:
         """
-        Save the master feature matrix and metadata to the data/master directory.
+        Save master matrix and metadata.
+
+        A timeframe-specific directory can be supplied by the module.
         """
-        master_dir = Path("data/master")
+        if master_dir is None:
+            master_dir = Path("data/master")
+        else:
+            master_dir = Path(master_dir)
+
         master_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Save master matrix
+
         master_path = master_dir / "master_feature_matrix.parquet"
-        df.to_parquet(master_path, index=False)
-        print(f"  Saved master matrix to {master_path}")
-        
-        # Save metadata
         metadata_path = master_dir / "feature_metadata.parquet"
+
+        df.to_parquet(master_path, index=False)
         metadata.to_parquet(metadata_path, index=False)
+
+        print(f"  Saved master matrix to {master_path}")
         print(f"  Saved feature metadata to {metadata_path}")
 
     def compute(
         self,
         feature_store: Optional[Path] = None,
-        feature_dict: Optional[Dict[str, pd.DataFrame]] = None
+        feature_dict: Optional[Dict[str, pd.DataFrame]] = None,
+        master_dir: Optional[Path] = None
     ) -> FeatureRepositoryResult:
         """
         Main computation method.
-        
+
         Args:
             feature_store: Path to the feature store directory (auto-discovers files)
             feature_dict: Dictionary of feature DataFrames (legacy support)
-            
+            master_dir: Optional timeframe-specific output directory
+
         Returns:
             FeatureRepositoryResult with master matrix and metadata
         """
         print("\n  Building Feature Repository...")
-        
+
         # Load features either from feature store or from dictionary
         if feature_store is not None:
             print(f"  Loading feature store from: {feature_store}")
@@ -312,35 +404,39 @@ class FeatureRepositoryEngine:
             print(f"  Loading from feature dictionary with {len(feature_dict)} features...")
         else:
             raise ValueError("Either feature_store or feature_dict must be provided")
-        
+
         print(f"  Processing {len(feature_dict)} feature DataFrames...")
-        
+
         # Load and merge features
         master_df = self.load_features(feature_dict)
         print(f"  Merged shape: {master_df.shape}")
-        
+
         # Align timestamps
         master_df = self.align_timestamps(master_df)
         print(f"  Aligned shape: {master_df.shape}")
-        
+
         # Handle missing values
         master_df = self.handle_missing_values(master_df)
-        
+
         # Build metadata
         metadata = self.build_metadata(master_df)
-        
+
         # Compute statistics
         stats = self.compute_statistics(master_df, metadata)
-        
+
         print(f"\n  Repository Summary:")
         print(f"    Rows: {stats['total_rows']:,}")
         print(f"    Features: {stats['total_features']}")
         print(f"    Missing: {stats['missing_percentage']:.2f}%")
         print(f"    Memory: {stats['memory_usage_mb']:.2f} MB")
-        
-        # Save master matrix to data/master
-        self.save_master_matrix(master_df, metadata)
-        
+
+        # Save master matrix
+        self.save_master_matrix(
+            master_df,
+            metadata,
+            master_dir=master_dir
+        )
+
         return FeatureRepositoryResult(
             master_feature_matrix=master_df,
             feature_metadata=metadata,
