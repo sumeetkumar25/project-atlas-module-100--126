@@ -513,7 +513,10 @@ def run_all_tests():
         test_engine_chi_square,
         test_engine_f_score,
         test_engine_normalization,
-        test_engine_combination,
+        # Fixed: the function is defined as test_engine_combine(),
+        # not test_engine_combination(). The old name caused a
+        # NameError before any test could run.
+        test_engine_combine,
         test_engine_compute,
         test_statistics,
         test_validator,
