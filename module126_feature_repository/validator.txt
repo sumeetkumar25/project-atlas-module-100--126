@@ -1,9 +1,6 @@
 # atlas/modules/module126_feature_repository/validator.py
-"""
-Module 126 - Feature Repository Validator
-"""
+"""Module 126 - Feature Repository Validator"""
 
-import numpy as np
 import pandas as pd
 from .engine import FeatureRepositoryResult
 from .statistics import FeatureRepositoryStatistics
@@ -11,7 +8,19 @@ from .statistics import FeatureRepositoryStatistics
 
 class FeatureRepositoryValidator:
     """Validator for feature repository results."""
-    
+
+    REQUIRED_FEATURES = {
+        "hurst_exponent_rolling_60d",
+        "normalized_entropy_rolling_60d",
+    }
+
+    IGNORE_COLS = {
+        "timestamp",
+        "date",
+        "time",
+        "index",
+    }
+
     def validate(
         self,
         result: FeatureRepositoryResult,
@@ -20,102 +29,201 @@ class FeatureRepositoryValidator:
         """Validate results and statistics."""
         issues = []
         warnings = []
-        
-        # Check master matrix
-        if result.master_feature_matrix.empty:
+
+        df = result.master_feature_matrix
+        metadata = result.feature_metadata
+
+        # ---------------------------------------------------------------
+        # 1. Master matrix checks
+        # ---------------------------------------------------------------
+        if df is None or df.empty:
             issues.append("Master feature matrix is empty")
         else:
-            # Check timestamp column
-            if 'timestamp' not in result.master_feature_matrix.columns:
+            if "timestamp" not in df.columns:
                 issues.append("Missing timestamp column")
             else:
-                # Check duplicate timestamps
-                dup_count = result.master_feature_matrix['timestamp'].duplicated().sum()
+                dup_count = df["timestamp"].duplicated().sum()
                 if dup_count > 0:
-                    warnings.append(f"Found {dup_count} duplicate timestamps")
-            
-            # Check NaN ratio
-            nan_pct = result.master_feature_matrix.isna().mean().mean() * 100
+                    issues.append(
+                        f"Found {dup_count} duplicate timestamps in master matrix"
+                    )
+
+            # NaN ratio (informational)
+            nan_pct = df.isna().mean().mean() * 100
             if nan_pct > 10:
                 warnings.append(f"High NaN ratio: {nan_pct:.1f}%")
-            
-            # Check constant columns
-            constant_cols = []
-            for col in result.master_feature_matrix.columns:
-                if col != 'timestamp' and result.master_feature_matrix[col].nunique() == 1:
-                    constant_cols.append(col)
+
+            # Constant columns (excluding ignored)
+            constant_cols = [
+                col for col in df.columns
+                if col not in self.IGNORE_COLS
+                and df[col].nunique() == 1
+            ]
             if constant_cols:
-                warnings.append(f"Found {len(constant_cols)} constant columns: {constant_cols[:5]}...")
-        
-        # Check metadata
-        if result.feature_metadata.empty:
+                warnings.append(
+                    f"Found {len(constant_cols)} constant columns: "
+                    f"{constant_cols[:5]}..."
+                )
+
+            # -----------------------------------------------------------
+            # 2. Required upstream features (Modules 035 and 037)
+            # -----------------------------------------------------------
+            matrix_features = set(df.columns) - self.IGNORE_COLS
+            missing_required = self.REQUIRED_FEATURES - matrix_features
+            if missing_required:
+                issues.append(
+                    "Missing required upstream features in master matrix: "
+                    f"{sorted(missing_required)}. "
+                    "Modules 035 and 037 must run before Module 126."
+                )
+
+        # ---------------------------------------------------------------
+        # 3. Metadata integrity
+        # ---------------------------------------------------------------
+        if metadata is None or metadata.empty:
             issues.append("Feature metadata is empty")
         else:
-            # Check required columns
-            required_cols = ['feature', 'dtype', 'null_count', 'null_percentage', 'unique_values']
-            missing = set(required_cols) - set(result.feature_metadata.columns)
+            required_meta_cols = {
+                "feature",
+                "dtype",
+                "null_count",
+                "null_percentage",
+                "unique_values",
+            }
+            missing = required_meta_cols - set(metadata.columns)
             if missing:
                 issues.append(f"Missing columns in metadata: {missing}")
-            
-            # Check feature names are unique
-            if result.feature_metadata['feature'].duplicated().any():
-                issues.append("Duplicate feature names found in metadata")
-        
-        # Check statistics
+
+            if "feature" in metadata.columns:
+                if metadata["feature"].duplicated().any():
+                    issues.append(
+                        "Duplicate feature names found in metadata"
+                    )
+
+                # -------------------------------------------------------
+                # 4. Matrix <-> metadata cross-checks
+                # -------------------------------------------------------
+                if df is not None and not df.empty:
+                    matrix_features = set(df.columns) - self.IGNORE_COLS
+                    metadata_features = set(metadata["feature"])
+
+                    # Every metadata feature must exist in the matrix.
+                    meta_only = metadata_features - matrix_features
+                    if meta_only:
+                        issues.append(
+                            "Metadata references features absent from matrix: "
+                            f"{sorted(meta_only)}"
+                        )
+
+                    # Every matrix feature must have metadata.
+                    matrix_only = matrix_features - metadata_features
+                    if matrix_only:
+                        issues.append(
+                            "Matrix contains features missing from metadata: "
+                            f"{sorted(matrix_only)}"
+                        )
+
+                    # Required upstream features must appear in metadata too.
+                    missing_required_meta = (
+                        self.REQUIRED_FEATURES - metadata_features
+                    )
+                    if missing_required_meta and not missing_required_meta.intersection(
+                        self.REQUIRED_FEATURES - matrix_features
+                    ):
+                        # Only flag here if the feature IS in the matrix but
+                        # somehow absent from metadata (duplicate diagnostic
+                        # avoided when the matrix itself is already missing it).
+                        present_but_unmeta = missing_required_meta - (
+                            self.REQUIRED_FEATURES - matrix_features
+                        )
+                        if present_but_unmeta:
+                            issues.append(
+                                "Required upstream features present in matrix "
+                                f"but missing from metadata: {sorted(present_but_unmeta)}"
+                            )
+
+                    # Row-count consistency between matrix and metadata stats.
+                    if "null_count" in metadata.columns:
+                        for _, row in metadata.iterrows():
+                            feat = row["feature"]
+                            if feat in df.columns:
+                                actual_nulls = int(df[feat].isna().sum())
+                                if int(row["null_count"]) != actual_nulls:
+                                    issues.append(
+                                        f"Null count mismatch for '{feat}': "
+                                        f"metadata={int(row['null_count'])}, "
+                                        f"matrix={actual_nulls}"
+                                    )
+
+        # ---------------------------------------------------------------
+        # 5. Statistics sanity
+        # ---------------------------------------------------------------
         if statistics.total_rows <= 0:
             issues.append(f"Invalid total rows: {statistics.total_rows}")
-        
+
         if statistics.total_features <= 0:
             issues.append(f"Invalid total features: {statistics.total_features}")
-        
+
         if not (0 <= statistics.feature_density <= 1):
-            issues.append(f"Feature density outside [0,1]: {statistics.feature_density}")
-        
+            issues.append(
+                f"Feature density outside [0,1]: {statistics.feature_density}"
+            )
+
         if not (0 <= statistics.missing_percentage <= 100):
-            issues.append(f"Missing percentage outside [0,100]: {statistics.missing_percentage}")
-        
-        # Check statistics match result
-        if statistics.total_rows != len(result.master_feature_matrix):
             issues.append(
-                f"Total rows mismatch: stats={statistics.total_rows}, "
-                f"result={len(result.master_feature_matrix)}"
+                f"Missing percentage outside [0,100]: {statistics.missing_percentage}"
             )
-        
-        if statistics.total_features != len(result.feature_metadata):
-            issues.append(
-                f"Total features mismatch: stats={statistics.total_features}, "
-                f"result={len(result.feature_metadata)}"
-            )
-        
-        # Warnings (non-fatal)
+
+        if df is not None and not df.empty:
+            if statistics.total_rows != len(df):
+                issues.append(
+                    f"Total rows mismatch: stats={statistics.total_rows}, "
+                    f"result={len(df)}"
+                )
+
+        if metadata is not None and not metadata.empty:
+            if statistics.total_features != len(metadata):
+                issues.append(
+                    f"Total features mismatch: stats={statistics.total_features}, "
+                    f"result={len(metadata)}"
+                )
+
+        # ---------------------------------------------------------------
+        # 6. Warnings (non-fatal)
+        # ---------------------------------------------------------------
         if statistics.missing_percentage > 5:
-            warnings.append(f"High missing percentage: {statistics.missing_percentage:.1f}%")
-        
+            warnings.append(
+                f"High missing percentage: {statistics.missing_percentage:.1f}%"
+            )
+
         if statistics.constant_features > 0:
-            warnings.append(f"Found {statistics.constant_features} constant features")
-        
+            warnings.append(
+                f"Found {statistics.constant_features} constant features"
+            )
+
         if warnings:
             print("\n  WARNINGS:")
             for warning in warnings:
                 print(f"    ⚠ {warning}")
-        
+
         if issues:
             raise ValueError(
-                f"Feature Repository validation failed with {len(issues)} issue(s):\n" +
-                "\n".join(f"  - {issue}" for issue in issues)
+                f"Feature Repository validation failed with "
+                f"{len(issues)} issue(s):\n"
+                + "\n".join(f"  - {issue}" for issue in issues)
             )
-        
+
         return True
 
 
 def run_validation(result, statistics):
     """Run validation with user-friendly output."""
     validator = FeatureRepositoryValidator()
-    
+
     print("\n" + "=" * 60)
     print("FEATURE REPOSITORY VALIDATION")
     print("=" * 60)
-    
+
     try:
         validator.validate(result, statistics)
         print("\n  ✓ All validation checks passed")
