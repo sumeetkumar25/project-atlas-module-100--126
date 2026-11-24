@@ -295,6 +295,16 @@ class BreakoutProbabilityEngine:
     ) -> List[Dict[str, Any]]:
         """
         Compute probabilities for every state.
+
+        Counts are always computed from the observed labels,
+        independent of whether the state has enough samples to
+        estimate probabilities. This preserves the raw observed
+        evidence even when a state falls below min_samples.
+
+        Only the probabilities and Wilson confidence intervals are
+        gated on has_samples — they are meaningless as statistical
+        estimates below min_samples and would otherwise leak a
+        misleading 1.0 "no breakout" claim for under-sampled states.
         """
 
         if len(states) != len(breakout_labels):
@@ -323,19 +333,21 @@ class BreakoutProbabilityEngine:
                 n >= self.min_samples
             )
 
+            # Counts reflect what was actually observed,
+            # regardless of whether n >= min_samples.
+            up_count = int(
+                np.sum(state_labels == 1)
+            )
+
+            down_count = int(
+                np.sum(state_labels == -1)
+            )
+
+            no_breakout_count = int(
+                np.sum(state_labels == 0)
+            )
+
             if has_samples:
-
-                up_count = int(
-                    np.sum(state_labels == 1)
-                )
-
-                down_count = int(
-                    np.sum(state_labels == -1)
-                )
-
-                no_breakout_count = int(
-                    np.sum(state_labels == 0)
-                )
 
                 up_prob = (
                     up_count / n
@@ -365,13 +377,12 @@ class BreakoutProbabilityEngine:
 
             else:
 
-                up_count = 0
-                down_count = 0
-                no_breakout_count = 0
-
+                # Insufficient samples to estimate probabilities.
+                # Report zeros rather than a misleading 1.0
+                # no-breakout probability.
                 up_prob = 0.0
                 down_prob = 0.0
-                no_breakout_prob = 1.0
+                no_breakout_prob = 0.0
 
                 lower_up = 0.0
                 upper_up = 0.0
