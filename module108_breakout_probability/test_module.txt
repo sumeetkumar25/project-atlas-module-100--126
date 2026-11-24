@@ -89,7 +89,7 @@ def test_engine_atr():
     assert pd.isna(atr.iloc[:engine.atr_period - 1]).all()
 
     print("  ✓ ATR calculation test passed")
-    return True
+    return None
 
 
 def test_engine_breakout_detection():
@@ -125,7 +125,7 @@ def test_engine_breakout_detection():
 
     print(f"  Breakout labels sample: {labels[:5]}")
     print("  ✓ Breakout detection test passed")
-    return True
+    return None
 
 
 def test_engine_state_probabilities():
@@ -169,7 +169,7 @@ def test_engine_state_probabilities():
             assert np.isclose(prob_sum, 1.0)
 
     print("  ✓ State probability computation test passed")
-    return True
+    return None
 
 
 def test_engine_wilson_interval():
@@ -197,7 +197,7 @@ def test_engine_wilson_interval():
     print(f"  Wilson interval for 100/100: ({lower_100:.3f}, {upper_100:.3f})")
 
     print("  ✓ Wilson interval test passed")
-    return True
+    return None
 
 
 def test_engine_compute():
@@ -235,7 +235,7 @@ def test_engine_compute():
         f"{result.state_statistics[result.state_statistics['total_samples'] > 0].shape[0]}/16"
     )
     print("  ✓ Full engine test passed")
-    return True
+    return None
 
 
 def test_statistics():
@@ -267,7 +267,7 @@ def test_statistics():
     print(f"  Max up state: {stats.max_up_prob_state} ({stats.max_up_prob_value:.2%})")
     print(f"  Max down state: {stats.max_down_prob_state} ({stats.max_down_prob_value:.2%})")
     print("  ✓ Statistics test passed")
-    return True
+    return None
 
 
 def test_validator():
@@ -293,7 +293,7 @@ def test_validator():
     assert passed
 
     print("  ✓ Validator test passed")
-    return True
+    return None
 
 
 def test_pipeline():
@@ -333,7 +333,7 @@ def test_pipeline():
     print(f"  Max up state: {result.statistics.get('max_up_prob_state')}")
     print(f"  Max down state: {result.statistics.get('max_down_prob_state')}")
     print("  ✓ Full pipeline test passed")
-    return True
+    return None
 
 
 def test_probability_sums():
@@ -367,7 +367,7 @@ def test_probability_sums():
 
     print("  ✓ All probability sums equal 1")
     print("  ✓ Probability sums test passed")
-    return True
+    return None
 
 
 def test_engine_invalid_future_window():
@@ -396,7 +396,7 @@ def test_engine_invalid_future_window():
 
     print("  ✓ Final unevaluable observation correctly marked -99")
     print("  ✓ Invalid future-window test passed")
-    return True
+    return None
 
 
 def test_build_breakout_targets():
@@ -425,7 +425,7 @@ def test_build_breakout_targets():
         assert np.all(np.isin(values, [-99, -1, 0, 1]))
 
     print("  ✓ Row-level breakout target construction passed")
-    return True
+    return None
 
 
 def test_all_horizons_invalid_tail():
@@ -448,7 +448,7 @@ def test_all_horizons_invalid_tail():
         assert np.all(target.iloc[-horizon:].values == -99)
 
     print("  ✓ Invalid future windows handled for all horizons")
-    return True
+    return None
 
 
 def test_canonical_artifact_contract():
@@ -519,7 +519,24 @@ def test_canonical_artifact_contract():
     print("  ✓ Report artifact valid")
     print("  ✓ Validation artifact valid")
     print("  ✓ Canonical artifact contract passed")
-    return True
+    return None
+
+
+def _run_test(test_fn):
+    """
+    Execute a test function and report pass/fail.
+
+    Test functions follow the pytest contract: they return None on
+    success and raise an exception (typically AssertionError) on
+    failure. Pass/fail is therefore determined by exception
+    presence, not by return value.
+    """
+    try:
+        test_fn()
+        return True
+    except Exception as exc:
+        print(f"  ✗ {test_fn.__name__} raised: {exc}")
+        return False
 
 
 def main():
@@ -530,19 +547,19 @@ def main():
     print("=" * 70)
 
     results = {}
-    results["atr"] = test_engine_atr()
-    results["breakout_detection"] = test_engine_breakout_detection()
-    results["state_probabilities"] = test_engine_state_probabilities()
-    results["wilson_interval"] = test_engine_wilson_interval()
-    results["full_engine"] = test_engine_compute()
-    results["statistics"] = test_statistics()
-    results["validator"] = test_validator()
-    results["pipeline"] = test_pipeline()
-    results["probability_sums"] = test_probability_sums()
-    results["invalid_future_window"] = test_engine_invalid_future_window()
-    results["build_breakout_targets"] = test_build_breakout_targets()
-    results["all_horizons_invalid_tail"] = test_all_horizons_invalid_tail()
-    results["canonical_artifact_contract"] = test_canonical_artifact_contract()
+    results["atr"] = _run_test(test_engine_atr)
+    results["breakout_detection"] = _run_test(test_engine_breakout_detection)
+    results["state_probabilities"] = _run_test(test_engine_state_probabilities)
+    results["wilson_interval"] = _run_test(test_engine_wilson_interval)
+    results["full_engine"] = _run_test(test_engine_compute)
+    results["statistics"] = _run_test(test_statistics)
+    results["validator"] = _run_test(test_validator)
+    results["pipeline"] = _run_test(test_pipeline)
+    results["probability_sums"] = _run_test(test_probability_sums)
+    results["invalid_future_window"] = _run_test(test_engine_invalid_future_window)
+    results["build_breakout_targets"] = _run_test(test_build_breakout_targets)
+    results["all_horizons_invalid_tail"] = _run_test(test_all_horizons_invalid_tail)
+    results["canonical_artifact_contract"] = _run_test(test_canonical_artifact_contract)
 
     print("\n" + "=" * 70)
     print("RESULTS")
